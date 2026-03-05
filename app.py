@@ -81,10 +81,10 @@ def save_dictionaries(path: str, dictionaries: Dict[str, List[str]]) -> None:
 
 
 @st.cache_data(show_spinner=False)
-def load_excels_from_folder(folder: str) -> pd.DataFrame:
+def load_excels_from_folder(folder: str, selected_files: List[str], max_rows_per_file: int) -> pd.DataFrame:
     if not os.path.isdir(folder):
         return pd.DataFrame()
-    files = [f for f in os.listdir(folder) if f.lower().endswith(".xlsx")]
+    files = [f for f in selected_files if str(f).lower().endswith(".xlsx")]
     if not files:
         return pd.DataFrame()
 
@@ -92,7 +92,10 @@ def load_excels_from_folder(folder: str) -> pd.DataFrame:
     for file_name in sorted(files):
         path = os.path.join(folder, file_name)
         try:
-            df = pd.read_excel(path, engine="openpyxl")
+            read_kwargs = {"engine": "openpyxl"}
+            if max_rows_per_file > 0:
+                read_kwargs["nrows"] = int(max_rows_per_file)
+            df = pd.read_excel(path, **read_kwargs)
             df.columns = [canon_colname(c) for c in df.columns]
             df["source_file"] = file_name
             frames.append(df)
@@ -102,11 +105,14 @@ def load_excels_from_folder(folder: str) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True, sort=False) if frames else pd.DataFrame()
 
 
-def load_uploaded_excels(uploaded_files) -> pd.DataFrame:
+def load_uploaded_excels(uploaded_files, max_rows_per_file: int) -> pd.DataFrame:
     frames = []
     for uploaded in uploaded_files:
         try:
-            df = pd.read_excel(uploaded, engine="openpyxl")
+            read_kwargs = {"engine": "openpyxl"}
+            if max_rows_per_file > 0:
+                read_kwargs["nrows"] = int(max_rows_per_file)
+            df = pd.read_excel(uploaded, **read_kwargs)
             df.columns = [canon_colname(c) for c in df.columns]
             df["source_file"] = getattr(uploaded, "name", "uploaded.xlsx")
             frames.append(df)
@@ -262,11 +268,37 @@ st.caption("Comptage de mots-cles dans les titres, stats descriptives, top chain
 
 with st.expander("Donnees", expanded=False):
     st.write("Charge des fichiers `.xlsx` ou utilise le dossier local `data/`.")
+    max_rows_per_file = st.number_input(
+        "Limiter lignes par fichier (0 = tout)",
+        min_value=0,
+        max_value=2_000_000,
+        value=200_000,
+        step=50_000,
+    )
+    local_excel_files = sorted(
+        f for f in os.listdir(DATA_DIR) if f.lower().endswith(".xlsx")
+    ) if os.path.isdir(DATA_DIR) else []
+    selected_local_files = st.multiselect(
+        "Fichiers locaux a charger",
+        options=local_excel_files,
+        default=[],
+    )
     uploaded_files = st.file_uploader(
         "Uploader des fichiers Excel", type=["xlsx"], accept_multiple_files=True
     )
 
-df_raw = load_uploaded_excels(uploaded_files) if uploaded_files else load_excels_from_folder(DATA_DIR)
+if uploaded_files:
+    df_raw = load_uploaded_excels(uploaded_files, max_rows_per_file=max_rows_per_file)
+elif selected_local_files:
+    df_raw = load_excels_from_folder(
+        DATA_DIR,
+        selected_files=selected_local_files,
+        max_rows_per_file=max_rows_per_file,
+    )
+else:
+    st.info("Selectionne au moins un fichier local ou upload un/des fichier(s) Excel.")
+    st.stop()
+
 if df_raw.empty:
     st.warning("Aucune donnee chargee.")
     st.stop()
@@ -346,7 +378,7 @@ with st.expander("Dictionnaires", expanded=False):
     )
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("Enregistrer dictionnaire", use_container_width=True):
+        if st.button("Enregistrer dictionnaire", width="stretch"):
             dictionaries[theme] = [k.strip() for k in keyword_text.splitlines() if k.strip()]
             st.session_state["dictionaries"] = dictionaries
             try:
@@ -355,7 +387,7 @@ with st.expander("Dictionnaires", expanded=False):
             except Exception as exc:
                 st.warning(f"Ecriture du fichier dictionnaire impossible ({exc}).")
     with c2:
-        if st.button("Reset dictionnaires par defaut", use_container_width=True):
+        if st.button("Reset dictionnaires par defaut", width="stretch"):
             st.session_state["dictionaries"] = DEFAULT_DICTIONARIES.copy()
             st.session_state["theme"] = sorted(DEFAULT_DICTIONARIES.keys())[0]
             try:
@@ -436,7 +468,7 @@ fig_freq = px.line(
 )
 apply_time_axis_controls(fig_freq)
 fig_freq.update_layout(height=420)
-st.plotly_chart(fig_freq, use_container_width=True)
+st.plotly_chart(fig_freq, width="stretch")
 
 st.subheader("Volumes")
 fig_vol = px.line(
@@ -450,15 +482,15 @@ fig_vol = px.line(
 )
 apply_time_axis_controls(fig_vol)
 fig_vol.update_layout(height=420)
-st.plotly_chart(fig_vol, use_container_width=True)
+st.plotly_chart(fig_vol, width="stretch")
 
 st.subheader("Statistiques descriptives")
-st.dataframe(desc, use_container_width=True)
+st.dataframe(desc, width="stretch")
 
 if channel_col:
     st.subheader("Top 10 chaines (sur la periode)")
     st.caption("Calcule sur la periode choisie, avant application du filtre chaine.")
-    st.dataframe(top_channels, use_container_width=True)
+    st.dataframe(top_channels, width="stretch")
     if not top_channels.empty:
         fig_top = px.bar(
             top_channels,
@@ -468,7 +500,7 @@ if channel_col:
             labels={"_channel": "Chaine", "matched_titles": "Titres matches"},
         )
         fig_top.update_layout(height=400)
-        st.plotly_chart(fig_top, use_container_width=True)
+        st.plotly_chart(fig_top, width="stretch")
 
 st.subheader("Apercu des titres matches")
 preview_cols = [c for c in ["_date", "_channel", title_col, "occurrences", "source_file"] if c in df_filtered.columns]
@@ -476,5 +508,5 @@ st.dataframe(
     df_filtered[df_filtered["is_match"] == 1]
     .sort_values(["occurrences", "_date"], ascending=[False, False])
     .head(300)[preview_cols],
-    use_container_width=True,
+    width="stretch",
 )
