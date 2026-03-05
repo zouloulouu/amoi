@@ -248,24 +248,21 @@ def add_tagging_columns_hier(
     titles_norm = df[title_col].fillna("").astype(str).map(normalize_text)
 
     df["occ_concept"] = titles_norm.map(lambda x: count_occurrences(x, concept_norm))
-    df["occ_context"] = titles_norm.map(lambda x: count_occurrences(x, context_norm))
+    # Contexte conserve pour compatibilite JSON, mais non utilise dans le matching.
+    df["occ_context"] = 0
     df["occ_up"] = titles_norm.map(lambda x: count_occurrences(x, up_norm))
     df["occ_down"] = titles_norm.map(lambda x: count_occurrences(x, down_norm))
 
     df["is_concept"] = (df["occ_concept"] > 0).astype("int8")
-    df["is_context"] = (df["occ_context"] > 0).astype("int8")
+    df["is_context"] = 0
     df["is_match_broad"] = df["is_concept"].astype("int8")
-
-    if context_norm:
-        strict_mask = (df["is_concept"] == 1) & (df["is_context"] == 1)
-        df["is_match_strict"] = strict_mask.astype("int8")
-    else:
-        df["is_match_strict"] = df["is_match_broad"].astype("int8")
+    df["is_match_strict"] = df["is_match_broad"].astype("int8")
+    df["is_match"] = df["is_match_broad"].astype("int8")
 
     direction = pd.Series(DIRECTION_FLAT, index=df.index, dtype="int8")
-    strict_rows = df["is_match_strict"] == 1
-    direction.loc[strict_rows & (df["occ_up"] > df["occ_down"])] = DIRECTION_UP
-    direction.loc[strict_rows & (df["occ_down"] > df["occ_up"])] = DIRECTION_DOWN
+    matched_rows = df["is_match"] == 1
+    direction.loc[matched_rows & (df["occ_up"] > df["occ_down"])] = DIRECTION_UP
+    direction.loc[matched_rows & (df["occ_down"] > df["occ_up"])] = DIRECTION_DOWN
     df["direction"] = direction
 
     return df
@@ -279,8 +276,8 @@ def periodize(series: pd.Series, frequency: str) -> pd.Series:
     return series.dt.to_period("M").dt.to_timestamp()
 
 
-def aggregate_by_period(df: pd.DataFrame, frequency: str, mode: str = "strict") -> pd.DataFrame:
-    match_col = "is_match_strict" if mode == "strict" else "is_match_broad"
+def aggregate_by_period(df: pd.DataFrame, frequency: str) -> pd.DataFrame:
+    match_col = "is_match"
     out = df.assign(period_start=periodize(df["_date"], frequency)).copy()
     out["_match_mode"] = out[match_col].astype(int)
     out["occurrences_concept"] = out["occ_concept"] * out["_match_mode"]
@@ -293,7 +290,7 @@ def aggregate_by_period(df: pd.DataFrame, frequency: str, mode: str = "strict") 
             total_titles=("_match_mode", "size"),
             broad_matched_titles=("is_match_broad", "sum"),
             strict_matched_titles=("is_match_strict", "sum"),
-            matched_titles=("_match_mode", "sum"),
+            matched_titles=("is_match", "sum"),
             occurrences_concept=("occurrences_concept", "sum"),
             up_titles=("up_flag", "sum"),
             down_titles=("down_flag", "sum"),
@@ -308,17 +305,13 @@ def aggregate_by_period(df: pd.DataFrame, frequency: str, mode: str = "strict") 
     return stats
 
 
-def build_descriptive_table(stats: pd.DataFrame, df_tagged: pd.DataFrame, mode: str) -> pd.DataFrame:
+def build_descriptive_table(stats: pd.DataFrame, df_tagged: pd.DataFrame) -> pd.DataFrame:
     if stats.empty or df_tagged.empty:
         return pd.DataFrame(columns=["indicateur", "valeur"])
 
-    match_col = "is_match_strict" if mode == "strict" else "is_match_broad"
-    freq_col = "strict_frequency" if mode == "strict" else "frequency"
-
     total_titles = int(len(df_tagged))
-    matched_titles = int(df_tagged[match_col].sum())
-    strict_titles = int(df_tagged["is_match_strict"].sum())
-    occ_concept_total = int(df_tagged.loc[df_tagged[match_col] == 1, "occ_concept"].sum())
+    matched_titles = int(df_tagged["is_match"].sum())
+    occ_concept_total = int(df_tagged.loc[df_tagged["is_match"] == 1, "occ_concept"].sum())
     up_titles = int((df_tagged["direction"] == DIRECTION_UP).sum())
     down_titles = int((df_tagged["direction"] == DIRECTION_DOWN).sum())
     net_signal = up_titles - down_titles
@@ -326,28 +319,26 @@ def build_descriptive_table(stats: pd.DataFrame, df_tagged: pd.DataFrame, mode: 
     return pd.DataFrame(
         [
             {"indicateur": "Titres analyses", "valeur": total_titles},
-            {"indicateur": "Titres matches (mode)", "valeur": matched_titles},
+            {"indicateur": "Titres matches", "valeur": matched_titles},
             {"indicateur": "Occurrences concept totales", "valeur": occ_concept_total},
-            {"indicateur": "Titres stricts", "valeur": strict_titles},
             {"indicateur": "Up", "valeur": up_titles},
             {"indicateur": "Down", "valeur": down_titles},
             {"indicateur": "Signal net", "valeur": net_signal},
-            {"indicateur": "Frequence moyenne", "valeur": float(stats[freq_col].mean())},
-            {"indicateur": "Frequence mediane", "valeur": float(stats[freq_col].median())},
-            {"indicateur": "Frequence max", "valeur": float(stats[freq_col].max())},
+            {"indicateur": "Frequence moyenne", "valeur": float(stats["frequency"].mean())},
+            {"indicateur": "Frequence mediane", "valeur": float(stats["frequency"].median())},
+            {"indicateur": "Frequence max", "valeur": float(stats["frequency"].max())},
             {"indicateur": "Volume moyen (titres matches)", "valeur": float(stats["matched_titles"].mean())},
             {"indicateur": "Nb periodes", "valeur": int(len(stats))},
         ]
     )
 
 
-def build_top_channels(df_tagged: pd.DataFrame, mode: str) -> pd.DataFrame:
+def build_top_channels(df_tagged: pd.DataFrame) -> pd.DataFrame:
     if "_channel" not in df_tagged.columns:
         return pd.DataFrame()
 
-    match_col = "is_match_strict" if mode == "strict" else "is_match_broad"
     work = df_tagged.copy()
-    work["_match_mode"] = work[match_col].astype(int)
+    work["_match_mode"] = work["is_match"].astype(int)
     work["occurrences_concept"] = work["occ_concept"] * work["_match_mode"]
     work["up_flag"] = (work["direction"] == DIRECTION_UP).astype(int)
     work["down_flag"] = (work["direction"] == DIRECTION_DOWN).astype(int)
@@ -421,8 +412,6 @@ if not title_col or not date_col:
 
 st.sidebar.header("Parametres")
 frequency = st.sidebar.selectbox("Frequence", ["Mensuelle", "Trimestrielle", "Annuelle"], index=0)
-strict_mode_enabled = st.sidebar.toggle("Mode strict (concept+contexte)", value=True)
-mode = "strict" if strict_mode_enabled else "broad"
 normalize_channels = True
 
 themes = sorted(dictionaries.keys())
@@ -447,7 +436,7 @@ with st.expander("Dictionnaires", expanded=False):
 
     st.markdown(
         "1. Saisis uniquement le nom du nouveau theme, puis clique `Ajouter un theme`.\n"
-        "2. Renseigne les 4 dictionnaires (1 ligne = 1 mot-cle), puis clique `Enregistrer dictionnaire`."
+        "2. Renseigne Concept + Sens (UP/DOWN), puis clique `Enregistrer dictionnaire`."
     )
 
     new_theme = st.text_input("Nouveau theme", value="")
@@ -475,11 +464,6 @@ with st.expander("Dictionnaires", expanded=False):
         value="\n".join(current_theme_dict["concept"]),
         height=140,
     )
-    context_text = st.text_area(
-        f"Contexte ({theme})",
-        value="\n".join(current_theme_dict["context"]),
-        height=140,
-    )
     up_text = st.text_area(
         f"Sens UP ({theme})",
         value="\n".join(current_theme_dict["up"]),
@@ -496,7 +480,7 @@ with st.expander("Dictionnaires", expanded=False):
         if st.button("Enregistrer dictionnaire", width="stretch"):
             dictionaries[theme] = {
                 "concept": [k.strip() for k in concept_text.splitlines() if k.strip()],
-                "context": [k.strip() for k in context_text.splitlines() if k.strip()],
+                "context": current_theme_dict.get("context", []),
                 "up": [k.strip() for k in up_text.splitlines() if k.strip()],
                 "down": [k.strip() for k in down_text.splitlines() if k.strip()],
             }
@@ -518,7 +502,6 @@ with st.expander("Dictionnaires", expanded=False):
 
 theme_dict = normalize_theme_dictionary(st.session_state["dictionaries"].get(theme, empty_theme_dictionary()))
 concept_norm = prepare_keywords(theme_dict["concept"])
-context_norm = prepare_keywords(theme_dict["context"])
 up_norm = prepare_keywords(theme_dict["up"])
 down_norm = prepare_keywords(theme_dict["down"])
 
@@ -562,7 +545,7 @@ df_period = add_tagging_columns_hier(
     df_period,
     title_col=title_col,
     concept_norm=concept_norm,
-    context_norm=context_norm,
+    context_norm=[],
     up_norm=up_norm,
     down_norm=down_norm,
 )
@@ -581,12 +564,12 @@ if df_filtered.empty:
     st.warning("Aucune ligne apres filtre chaine.")
     st.stop()
 
-stats = aggregate_by_period(df_filtered, frequency=frequency, mode=mode)
-desc = build_descriptive_table(stats, df_filtered, mode=mode)
-top_channels = build_top_channels(df_period, mode=mode)
+stats = aggregate_by_period(df_filtered, frequency=frequency)
+desc = build_descriptive_table(stats, df_filtered)
+top_channels = build_top_channels(df_period)
 
-match_col = "is_match_strict" if mode == "strict" else "is_match_broad"
-freq_col = "strict_frequency" if mode == "strict" else "frequency"
+match_col = "is_match"
+freq_col = "frequency"
 occ_concept_total = int(df_filtered.loc[df_filtered[match_col] == 1, "occ_concept"].sum())
 
 k1, k2, k3, k4 = st.columns(4)
@@ -602,7 +585,7 @@ fig_freq = px.line(
     y=freq_col,
     markers=True,
     render_mode="svg",
-    title=f"Frequence ({frequency.lower()}) - theme '{theme}' ({mode})",
+    title=f"Frequence ({frequency.lower()}) - theme '{theme}'",
     labels={"period_start": "Date", freq_col: "Part de titres matches"},
 )
 apply_time_axis_controls(fig_freq)
@@ -616,7 +599,7 @@ fig_vol = px.line(
     y=["matched_titles", "occurrences_concept"],
     markers=True,
     render_mode="svg",
-    title=f"Volumes ({frequency.lower()}) - theme '{theme}' ({mode})",
+    title=f"Volumes ({frequency.lower()}) - theme '{theme}'",
     labels={"period_start": "Date", "value": "Volume", "variable": "Serie"},
 )
 apply_time_axis_controls(fig_vol)
@@ -649,7 +632,7 @@ if channel_col:
             top_channels,
             x="_channel",
             y="matched_titles",
-            title=f"Top chaines par titres matches ({mode})",
+            title="Top chaines par titres matches",
             labels={"_channel": "Chaine", "matched_titles": "Titres matches"},
         )
         fig_top.update_layout(height=400)
@@ -663,7 +646,6 @@ preview_cols = [
         "_channel",
         title_col,
         "occ_concept",
-        "occ_context",
         "occ_up",
         "occ_down",
         "direction",
