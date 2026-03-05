@@ -81,10 +81,10 @@ def save_dictionaries(path: str, dictionaries: Dict[str, List[str]]) -> None:
 
 
 @st.cache_data(show_spinner=False)
-def load_parquets_from_folder(folder: str, selected_files: List[str], max_rows_per_file: int) -> pd.DataFrame:
+def load_parquets_from_folder(folder: str) -> pd.DataFrame:
     if not os.path.isdir(folder):
         return pd.DataFrame()
-    files = [f for f in selected_files if str(f).lower().endswith(".parquet")]
+    files = [f for f in os.listdir(folder) if str(f).lower().endswith(".parquet")]
     if not files:
         return pd.DataFrame()
 
@@ -93,29 +93,12 @@ def load_parquets_from_folder(folder: str, selected_files: List[str], max_rows_p
         path = os.path.join(folder, file_name)
         try:
             df = pd.read_parquet(path)
-            if max_rows_per_file > 0:
-                df = df.head(int(max_rows_per_file))
             df.columns = [canon_colname(c) for c in df.columns]
             df["source_file"] = file_name
             frames.append(df)
         except Exception as exc:
             st.warning(f"Lecture impossible: {file_name} ({exc})")
 
-    return pd.concat(frames, ignore_index=True, sort=False) if frames else pd.DataFrame()
-
-
-def load_uploaded_parquets(uploaded_files, max_rows_per_file: int) -> pd.DataFrame:
-    frames = []
-    for uploaded in uploaded_files:
-        try:
-            df = pd.read_parquet(uploaded)
-            if max_rows_per_file > 0:
-                df = df.head(int(max_rows_per_file))
-            df.columns = [canon_colname(c) for c in df.columns]
-            df["source_file"] = getattr(uploaded, "name", "uploaded.parquet")
-            frames.append(df)
-        except Exception as exc:
-            st.warning(f"Upload illisible: {getattr(uploaded, 'name', 'uploaded.parquet')} ({exc})")
     return pd.concat(frames, ignore_index=True, sort=False) if frames else pd.DataFrame()
 
 
@@ -265,40 +248,12 @@ st.title("INA - Recherche de dictionnaires (version simplifiee)")
 st.caption("Comptage de mots-cles dans les titres, stats descriptives, top chaines, et series temporelles.")
 
 with st.expander("Donnees", expanded=False):
-    st.write("Charge des fichiers `.parquet` ou utilise le dossier local `data/`.")
-    max_rows_per_file = st.number_input(
-        "Limiter lignes par fichier (0 = tout)",
-        min_value=0,
-        max_value=2_000_000,
-        value=200_000,
-        step=50_000,
-    )
-    local_parquet_files = sorted(
-        f for f in os.listdir(DATA_DIR) if f.lower().endswith(".parquet")
-    ) if os.path.isdir(DATA_DIR) else []
-    selected_local_files = st.multiselect(
-        "Fichiers locaux a charger",
-        options=local_parquet_files,
-        default=[],
-    )
-    uploaded_files = st.file_uploader(
-        "Uploader des fichiers Parquet", type=["parquet"], accept_multiple_files=True
-    )
+    st.write("Chargement automatique de tous les fichiers `.parquet` du dossier local `data/`.")
 
-if uploaded_files:
-    df_raw = load_uploaded_parquets(uploaded_files, max_rows_per_file=max_rows_per_file)
-elif selected_local_files:
-    df_raw = load_parquets_from_folder(
-        DATA_DIR,
-        selected_files=selected_local_files,
-        max_rows_per_file=max_rows_per_file,
-    )
-else:
-    st.info("Selectionne au moins un fichier local ou upload un/des fichier(s) Parquet.")
-    st.stop()
+df_raw = load_parquets_from_folder(DATA_DIR)
 
 if df_raw.empty:
-    st.warning("Aucune donnee chargee.")
+    st.warning("Aucune donnee chargee (aucun fichier `.parquet` lisible dans `data/`).")
     st.stop()
 
 if "dictionaries" not in st.session_state:
