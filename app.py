@@ -6,6 +6,7 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 import plotly.express as px
+import pyarrow.parquet as pq
 import streamlit as st
 
 
@@ -24,6 +25,19 @@ DEFAULT_DICTIONARIES: Dict[str, List[str]] = {
         "ipc",
     ]
 }
+
+TITLE_CANDIDATES = [
+    "titre_propre",
+    "titre",
+    "title",
+    "intitule",
+    "libelle",
+    "titre_programme",
+    "titre_collection",
+]
+DATE_CANDIDATES = ["date_diffusion", "date", "date_notice", "date_publication"]
+TIME_CANDIDATES = ["heure_diffusion", "heure", "time", "horaire"]
+CHANNEL_CANDIDATES = ["chaine", "channel"]
 
 
 def normalize_text(value: str) -> str:
@@ -92,22 +106,41 @@ def load_parquets_from_folder(folder: str) -> pd.DataFrame:
     for file_name in sorted(files):
         path = os.path.join(folder, file_name)
         try:
-            df = pd.read_parquet(path)
-            df.columns = [canon_colname(c) for c in df.columns]
-            df["source_file"] = file_name
-            frames.append(df)
+            schema_names = pq.ParquetFile(path).schema.names
+            source_by_canon = {canon_colname(c): c for c in schema_names}
+            source_title = next((source_by_canon[c] for c in TITLE_CANDIDATES if c in source_by_canon), None)
+            source_date = next((source_by_canon[c] for c in DATE_CANDIDATES if c in source_by_canon), None)
+            source_time = next((source_by_canon[c] for c in TIME_CANDIDATES if c in source_by_canon), None)
+            source_channel = next((source_by_canon[c] for c in CHANNEL_CANDIDATES if c in source_by_canon), None)
+
+            if not source_title or not source_date:
+                st.warning(f"Colonnes minimales absentes dans {file_name} (titre/date).")
+                continue
+
+            selected_columns = [source_title, source_date]
+            if source_time:
+                selected_columns.append(source_time)
+            if source_channel:
+                selected_columns.append(source_channel)
+
+            raw = pd.read_parquet(path, columns=selected_columns)
+            normalized = pd.DataFrame(
+                {
+                    "title": raw[source_title],
+                    "date": raw[source_date],
+                    "source_file": file_name,
+                }
+            )
+            if source_time:
+                normalized["time"] = raw[source_time]
+            if source_channel:
+                normalized["channel"] = raw[source_channel]
+
+            frames.append(normalized)
         except Exception as exc:
             st.warning(f"Lecture impossible: {file_name} ({exc})")
 
     return pd.concat(frames, ignore_index=True, sort=False) if frames else pd.DataFrame()
-
-
-def detect_column(columns: List[str], candidates: List[str], token: str) -> Optional[str]:
-    for c in candidates:
-        if c in columns:
-            return c
-    token_matches = [c for c in columns if token in c]
-    return token_matches[0] if token_matches else None
 
 
 def parse_datetime(df: pd.DataFrame, date_col: str, time_col: Optional[str]) -> pd.Series:
@@ -154,12 +187,10 @@ def count_occurrences(text_norm: str, keywords_norm: List[str]) -> int:
 
 
 def add_tagging_columns(df: pd.DataFrame, title_col: str, keywords_norm: List[str]) -> pd.DataFrame:
-    out = df.copy()
-    out["_title"] = out[title_col].fillna("").astype(str)
-    out["_title_norm"] = out["_title"].map(normalize_text)
-    out["occurrences"] = out["_title_norm"].map(lambda x: count_occurrences(x, keywords_norm))
-    out["is_match"] = (out["occurrences"] > 0).astype(int)
-    return out
+    titles = df[title_col].fillna("").astype(str)
+    df["occurrences"] = titles.map(lambda x: count_occurrences(normalize_text(x), keywords_norm))
+    df["is_match"] = (df["occurrences"] > 0).astype("int8")
+    return df
 
 
 def periodize(series: pd.Series, frequency: str) -> pd.Series:
@@ -171,12 +202,11 @@ def periodize(series: pd.Series, frequency: str) -> pd.Series:
 
 
 def aggregate_by_period(df: pd.DataFrame, frequency: str) -> pd.DataFrame:
-    out = df.copy()
-    out["period_start"] = periodize(out["_date"], frequency)
+    out = df.assign(period_start=periodize(df["_date"], frequency))
     stats = (
         out.groupby("period_start", as_index=False)
         .agg(
-            total_titles=("_title", "size"),
+            total_titles=("is_match", "size"),
             matched_titles=("is_match", "sum"),
             occurrences=("occurrences", "sum"),
         )
@@ -213,7 +243,7 @@ def build_top_channels(df_tagged: pd.DataFrame) -> pd.DataFrame:
     top = (
         df_tagged.groupby("_channel", as_index=False)
         .agg(
-            total_titles=("_title", "size"),
+            total_titles=("is_match", "size"),
             matched_titles=("is_match", "sum"),
             occurrences=("occurrences", "sum"),
         )
@@ -265,25 +295,17 @@ if not dictionaries:
     st.session_state["dictionaries"] = dictionaries
 
 columns = list(df_raw.columns)
-default_title = detect_column(
-    columns,
-    ["titre_propre", "titre", "title", "intitule", "libelle", "titre_programme", "titre_collection"],
-    "titre",
-)
-default_date = detect_column(columns, ["date_diffusion", "date", "date_notice", "date_publication"], "date")
-default_time = detect_column(columns, ["heure_diffusion", "heure", "time", "horaire"], "heure")
-default_channel = detect_column(columns, ["chaine", "channel"], "chaine")
+title_col = "title" if "title" in columns else None
+date_col = "date" if "date" in columns else None
+time_col = "time" if "time" in columns else None
+channel_col = "channel" if "channel" in columns else None
 
-if not default_title or not default_date:
+if not title_col or not date_col:
     st.error("Colonnes minimales introuvables: il faut au moins une colonne titre et une colonne date.")
     st.stop()
 
 st.sidebar.header("Parametres")
 frequency = st.sidebar.selectbox("Frequence", ["Mensuelle", "Trimestrielle", "Annuelle"], index=0)
-title_col = default_title
-date_col = default_date
-time_col = default_time if default_time in columns else None
-channel_col = default_channel if default_channel in columns else None
 normalize_channels = True
 
 themes = sorted(dictionaries.keys())
@@ -354,34 +376,37 @@ if not keywords_norm:
     st.info("Ajoute au moins un mot-cle dans le theme selectionne.")
     st.stop()
 
-df = df_raw.copy()
+df = df_raw
 df["_date"] = parse_datetime(df, date_col, time_col)
 df = df[df["_date"].notna()].copy()
 if df.empty:
     st.error("Aucune date valide apres parsing.")
     st.stop()
 
-if channel_col:
-    if normalize_channels:
-        df["_channel"] = df[channel_col].map(normalize_channel)
-    else:
-        df["_channel"] = df[channel_col].fillna("").astype(str).str.strip()
-else:
-    df["_channel"] = "(sans chaine)"
-
-min_date = df["_date"].min().to_pydatetime()
-max_date = df["_date"].max().to_pydatetime()
+min_date_ts = df["_date"].min()
+max_date_ts = df["_date"].max()
+default_start_ts = max_date_ts - pd.DateOffset(years=2)
+if default_start_ts < min_date_ts:
+    default_start_ts = min_date_ts
 date_start, date_end = st.sidebar.slider(
     "Periode",
-    min_value=min_date,
-    max_value=max_date,
-    value=(min_date, max_date),
+    min_value=min_date_ts.to_pydatetime(),
+    max_value=max_date_ts.to_pydatetime(),
+    value=(default_start_ts.to_pydatetime(), max_date_ts.to_pydatetime()),
 )
 
 df_period = df[(df["_date"] >= pd.Timestamp(date_start)) & (df["_date"] <= pd.Timestamp(date_end))].copy()
 if df_period.empty:
     st.warning("Aucune donnee dans la periode selectionnee.")
     st.stop()
+
+if channel_col:
+    if normalize_channels:
+        df_period["_channel"] = df_period[channel_col].map(normalize_channel)
+    else:
+        df_period["_channel"] = df_period[channel_col].fillna("").astype(str).str.strip()
+else:
+    df_period["_channel"] = "(sans chaine)"
 
 df_period = add_tagging_columns(df_period, title_col=title_col, keywords_norm=keywords_norm)
 
