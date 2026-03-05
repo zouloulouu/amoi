@@ -608,10 +608,18 @@ st.plotly_chart(fig_vol, width="stretch")
 
 if up_norm or down_norm:
     st.subheader("Sens du signal")
+    signal_series = st.multiselect(
+        "Series a afficher",
+        options=["net_signal", "up_titles", "down_titles"],
+        default=["net_signal"],
+        help="Selectionne les series pour simplifier la lecture du signal.",
+    )
+    if not signal_series:
+        signal_series = ["net_signal"]
     fig_signal = px.bar(
         stats,
         x="period_start",
-        y=["up_titles", "down_titles", "net_signal"],
+        y=signal_series,
         barmode="group",
         title=f"Sens du signal ({frequency.lower()}) - theme '{theme}'",
         labels={"period_start": "Date", "value": "Titres", "variable": "Indicateur"},
