@@ -1,0 +1,2 @@
+# Raw Excel exports are intentionally kept out of Git.
+data/*.xlsx
