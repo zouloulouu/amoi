@@ -1,7 +1,10 @@
 import json
+import logging
 import os
 import re
 import unicodedata
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from typing import Dict, List, Optional
 
 import pandas as pd
@@ -14,6 +17,8 @@ st.set_page_config(page_title="INA - Dictionnaire (simple)", layout="wide")
 
 DATA_DIR = "data"
 DICTIONARY_PATH = "dictionaries.json"
+LOG_DIR = Path("logs")
+LOG_PATH = LOG_DIR / "streamlit_app.log"
 
 DEFAULT_DICTIONARIES: Dict[str, Dict[str, List[str]]] = {
     "inflation": {
@@ -47,6 +52,33 @@ CHANNEL_CANDIDATES = ["chaine", "channel"]
 DIRECTION_UP = 1
 DIRECTION_DOWN = -1
 DIRECTION_FLAT = 0
+
+
+def setup_logger() -> logging.Logger:
+    logger = logging.getLogger("data_ina.app")
+    if logger.handlers:
+        return logger
+
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(LOG_PATH, maxBytes=2_000_000, backupCount=3, encoding="utf-8")
+    except Exception:
+        handler = logging.StreamHandler()
+
+    handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    return logger
+
+
+LOGGER = setup_logger()
+
+
+def stop_with_error_log(user_message: str, context: str, exc: Exception) -> None:
+    LOGGER.exception("%s: %s", context, exc)
+    st.error(f"{user_message} Consulte le log `{LOG_PATH.as_posix()}`.")
+    st.stop()
 
 
 def empty_theme_dictionary() -> Dict[str, List[str]]:
@@ -135,7 +167,8 @@ def load_dictionaries(path: str) -> Dict[str, Dict[str, List[str]]]:
         data = json.loads(raw)
         out = normalize_dictionaries_payload(data)
         return out if out else clone_dictionaries(DEFAULT_DICTIONARIES)
-    except Exception:
+    except Exception as exc:
+        LOGGER.exception("Impossible de charger le dictionnaire %s: %s", path, exc)
         return clone_dictionaries(DEFAULT_DICTIONARIES)
 
 
@@ -148,9 +181,11 @@ def save_dictionaries(path: str, dictionaries: Dict[str, Dict[str, List[str]]]) 
 @st.cache_data(show_spinner=False)
 def load_parquets_from_folder(folder: str) -> pd.DataFrame:
     if not os.path.isdir(folder):
+        LOGGER.warning("Dossier data introuvable: %s", folder)
         return pd.DataFrame()
     files = [f for f in os.listdir(folder) if str(f).lower().endswith(".parquet")]
     if not files:
+        LOGGER.warning("Aucun fichier parquet trouve dans %s", folder)
         return pd.DataFrame()
 
     frames = []
@@ -165,6 +200,7 @@ def load_parquets_from_folder(folder: str) -> pd.DataFrame:
             source_channel = next((source_by_canon[c] for c in CHANNEL_CANDIDATES if c in source_by_canon), None)
 
             if not source_title or not source_date:
+                LOGGER.warning("Colonnes minimales absentes dans %s", file_name)
                 st.warning(f"Colonnes minimales absentes dans {file_name} (titre/date).")
                 continue
 
@@ -188,7 +224,9 @@ def load_parquets_from_folder(folder: str) -> pd.DataFrame:
                 normalized["channel"] = raw[source_channel]
 
             frames.append(normalized)
+            LOGGER.info("Parquet charge: %s | lignes=%s", file_name, len(normalized))
         except Exception as exc:
+            LOGGER.exception("Lecture impossible sur %s: %s", file_name, exc)
             st.warning(f"Lecture impossible: {file_name} ({exc})")
 
     return pd.concat(frames, ignore_index=True, sort=False) if frames else pd.DataFrame()
@@ -413,6 +451,16 @@ if not title_col or not date_col:
 st.sidebar.header("Parametres")
 frequency = st.sidebar.selectbox("Frequence", ["Mensuelle", "Trimestrielle", "Annuelle"], index=0)
 normalize_channels = True
+with st.sidebar.expander("Diagnostics", expanded=False):
+    st.caption(f"Log erreurs: `{LOG_PATH.as_posix()}`")
+    if st.checkbox("Afficher les 30 dernieres lignes du log", value=False):
+        try:
+            with open(LOG_PATH, "r", encoding="utf-8") as f:
+                last_lines = f.readlines()[-30:]
+            st.code("".join(last_lines) if last_lines else "(log vide)", language="text")
+        except Exception as exc:
+            LOGGER.exception("Lecture du log impossible: %s", exc)
+            st.warning(f"Lecture du log impossible ({exc})")
 
 themes = sorted(dictionaries.keys())
 if not themes:
@@ -454,6 +502,7 @@ with st.expander("Dictionnaires", expanded=False):
             try:
                 save_dictionaries(DICTIONARY_PATH, dictionaries)
             except Exception as exc:
+                LOGGER.exception("Ecriture dictionnaire impossible (creation theme): %s", exc)
                 st.warning(f"Ecriture du fichier dictionnaire impossible ({exc}).")
             st.rerun()
 
@@ -489,6 +538,7 @@ with st.expander("Dictionnaires", expanded=False):
                 save_dictionaries(DICTIONARY_PATH, dictionaries)
                 st.success("Dictionnaire enregistre.")
             except Exception as exc:
+                LOGGER.exception("Ecriture dictionnaire impossible (enregistrement): %s", exc)
                 st.warning(f"Ecriture du fichier dictionnaire impossible ({exc}).")
     with c2:
         if st.button("Reset dictionnaires par defaut", width="stretch"):
@@ -496,8 +546,9 @@ with st.expander("Dictionnaires", expanded=False):
             st.session_state["theme"] = sorted(DEFAULT_DICTIONARIES.keys())[0]
             try:
                 save_dictionaries(DICTIONARY_PATH, st.session_state["dictionaries"])
-            except Exception:
-                pass
+            except Exception as exc:
+                LOGGER.exception("Ecriture dictionnaire impossible (reset): %s", exc)
+                st.warning(f"Ecriture du fichier dictionnaire impossible ({exc}).")
             st.rerun()
 
 theme_dict = normalize_theme_dictionary(st.session_state["dictionaries"].get(theme, empty_theme_dictionary()))
@@ -509,8 +560,12 @@ if not concept_norm:
     st.info("Ajoute au moins un mot-cle dans `Concept` pour le theme selectionne.")
     st.stop()
 
-df = df_raw
-df["_date"] = parse_datetime(df, date_col, time_col)
+df = df_raw.copy()
+try:
+    df["_date"] = parse_datetime(df, date_col, time_col)
+except Exception as exc:
+    stop_with_error_log("Erreur pendant le parsing des dates.", "parse_datetime", exc)
+
 df = df[df["_date"].notna()].copy()
 if df.empty:
     st.error("Aucune date valide apres parsing.")
@@ -521,12 +576,15 @@ max_date_ts = df["_date"].max()
 default_start_ts = max_date_ts - pd.DateOffset(years=2)
 if default_start_ts < min_date_ts:
     default_start_ts = min_date_ts
-date_start, date_end = st.sidebar.slider(
-    "Periode",
-    min_value=min_date_ts.to_pydatetime(),
-    max_value=max_date_ts.to_pydatetime(),
-    value=(default_start_ts.to_pydatetime(), max_date_ts.to_pydatetime()),
-)
+try:
+    date_start, date_end = st.sidebar.slider(
+        "Periode",
+        min_value=min_date_ts.to_pydatetime(),
+        max_value=max_date_ts.to_pydatetime(),
+        value=(default_start_ts.to_pydatetime(), max_date_ts.to_pydatetime()),
+    )
+except Exception as exc:
+    stop_with_error_log("Erreur pendant la creation du filtre de periode.", "sidebar.slider Periode", exc)
 
 df_period = df[(df["_date"] >= pd.Timestamp(date_start)) & (df["_date"] <= pd.Timestamp(date_end))].copy()
 if df_period.empty:
@@ -541,14 +599,17 @@ if channel_col:
 else:
     df_period["_channel"] = "(sans chaine)"
 
-df_period = add_tagging_columns_hier(
-    df_period,
-    title_col=title_col,
-    concept_norm=concept_norm,
-    context_norm=[],
-    up_norm=up_norm,
-    down_norm=down_norm,
-)
+try:
+    df_period = add_tagging_columns_hier(
+        df_period,
+        title_col=title_col,
+        concept_norm=concept_norm,
+        context_norm=[],
+        up_norm=up_norm,
+        down_norm=down_norm,
+    )
+except Exception as exc:
+    stop_with_error_log("Erreur pendant le tagging des titres.", "add_tagging_columns_hier", exc)
 
 all_channels = sorted(c for c in df_period["_channel"].dropna().unique().tolist() if str(c).strip())
 if not all_channels:
@@ -564,9 +625,12 @@ if df_filtered.empty:
     st.warning("Aucune ligne apres filtre chaine.")
     st.stop()
 
-stats = aggregate_by_period(df_filtered, frequency=frequency)
-desc = build_descriptive_table(stats, df_filtered)
-top_channels = build_top_channels(df_period)
+try:
+    stats = aggregate_by_period(df_filtered, frequency=frequency)
+    desc = build_descriptive_table(stats, df_filtered)
+    top_channels = build_top_channels(df_period)
+except Exception as exc:
+    stop_with_error_log("Erreur pendant le calcul des indicateurs.", "aggregate/build tables", exc)
 
 match_col = "is_match"
 freq_col = "frequency"
