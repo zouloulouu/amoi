@@ -9,13 +9,12 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import plotly.express as px
-import pyarrow.parquet as pq
 import streamlit as st
 
 
 st.set_page_config(page_title="INA - Dictionnaire (simple)", layout="wide")
 
-DATA_DIR = "data"
+CLEAN_ROOT = Path("data") / "clean"
 DICTIONARY_PATH = "dictionaries.json"
 LOG_DIR = Path("logs")
 LOG_PATH = LOG_DIR / "streamlit_app.log"
@@ -36,18 +35,7 @@ DEFAULT_DICTIONARIES: Dict[str, Dict[str, List[str]]] = {
     }
 }
 
-TITLE_CANDIDATES = [
-    "titre_propre",
-    "titre",
-    "title",
-    "intitule",
-    "libelle",
-    "titre_programme",
-    "titre_collection",
-]
-DATE_CANDIDATES = ["date_diffusion", "date", "date_notice", "date_publication"]
-TIME_CANDIDATES = ["heure_diffusion", "heure", "time", "horaire"]
-CHANNEL_CANDIDATES = ["chaine", "channel"]
+REQUIRED_CLEAN_COLUMNS = ["source_file", "title", "_title_norm", "_date", "_channel"]
 
 DIRECTION_UP = 1
 DIRECTION_DOWN = -1
@@ -137,25 +125,6 @@ def normalize_text(value: str) -> str:
     return text
 
 
-def canon_colname(name: str) -> str:
-    c = normalize_text(str(name).replace("\u00a0", " "))
-    c = re.sub(r"\s+", "_", c)
-    c = re.sub(r"[^a-z0-9_]", "_", c)
-    c = re.sub(r"_+", "_", c).strip("_")
-    return c
-
-
-def normalize_channel(value: str) -> str:
-    s = normalize_text(str(value))
-    s = s.replace("france2", "france 2").replace("fr2", "france 2").replace("f2", "france 2")
-    s = s.replace("t_f_1", "tf1").replace("tf1_", "tf1")
-    if "france 2" in s or s == "2":
-        return "France 2"
-    if "tf1" in s:
-        return "TF1"
-    return str(value).strip()
-
-
 def load_dictionaries(path: str) -> Dict[str, Dict[str, List[str]]]:
     if not os.path.exists(path):
         return clone_dictionaries(DEFAULT_DICTIONARIES)
@@ -196,14 +165,28 @@ def parquet_signature(folder: str) -> Tuple[Tuple[str, int, int], ...]:
     return tuple(signature)
 
 
+def resolve_active_clean_dir(clean_root: Path) -> Path:
+    current_path = clean_root / "CURRENT"
+    if current_path.exists():
+        version = current_path.read_text(encoding="utf-8").strip()
+        if version:
+            target = clean_root / version
+            if target.is_dir():
+                return target
+    candidates = sorted([p for p in clean_root.glob("v*_utc") if p.is_dir()])
+    if candidates:
+        return candidates[-1]
+    return clean_root
+
+
 @st.cache_resource(show_spinner=False)
-def load_parquets_from_folder(
-    folder: str, signature: Tuple[Tuple[str, int, int], ...], normalize_channels: bool
+def load_clean_parquets_from_folder(
+    folder: str, signature: Tuple[Tuple[str, int, int], ...]
 ) -> Tuple[pd.DataFrame, List[str]]:
     issues: List[str] = []
     if not os.path.isdir(folder):
-        LOGGER.warning("Dossier data introuvable: %s", folder)
-        issues.append(f"Dossier data introuvable: {folder}")
+        LOGGER.warning("Dossier clean introuvable: %s", folder)
+        issues.append(f"Dossier clean introuvable: {folder}")
         return pd.DataFrame(), issues
     if not signature:
         LOGGER.warning("Aucun fichier parquet trouve dans %s", folder)
@@ -214,39 +197,27 @@ def load_parquets_from_folder(
     for file_name, _, _ in signature:
         path = os.path.join(folder, file_name)
         try:
-            schema_names = pq.ParquetFile(path).schema.names
-            source_by_canon = {canon_colname(c): c for c in schema_names}
-            source_title = next((source_by_canon[c] for c in TITLE_CANDIDATES if c in source_by_canon), None)
-            source_date = next((source_by_canon[c] for c in DATE_CANDIDATES if c in source_by_canon), None)
-            source_time = next((source_by_canon[c] for c in TIME_CANDIDATES if c in source_by_canon), None)
-            source_channel = next((source_by_canon[c] for c in CHANNEL_CANDIDATES if c in source_by_canon), None)
-
-            if not source_title or not source_date:
-                LOGGER.warning("Colonnes minimales absentes dans %s", file_name)
-                issues.append(f"Colonnes minimales absentes dans {file_name} (titre/date).")
+            df = pd.read_parquet(path)
+            missing = [c for c in REQUIRED_CLEAN_COLUMNS if c not in df.columns]
+            if missing:
+                LOGGER.warning("Colonnes clean manquantes dans %s: %s", file_name, ", ".join(missing))
+                issues.append(f"Colonnes clean manquantes dans {file_name}: {', '.join(missing)}")
+                continue
+            keep_cols = [c for c in REQUIRED_CLEAN_COLUMNS if c in df.columns]
+            normalized = df[keep_cols].copy()
+            normalized["_date"] = pd.to_datetime(normalized["_date"], errors="coerce")
+            normalized = normalized[normalized["_date"].notna()].copy()
+            if normalized.empty:
+                LOGGER.warning("Aucune date valide dans %s", file_name)
+                issues.append(f"Aucune date valide dans {file_name}.")
                 continue
 
-            selected_columns = [source_title, source_date]
-            if source_time:
-                selected_columns.append(source_time)
-            if source_channel:
-                selected_columns.append(source_channel)
-
-            raw = pd.read_parquet(path, columns=selected_columns)
-            normalized = pd.DataFrame(
-                {
-                    "title": raw[source_title],
-                    "date": raw[source_date],
-                    "source_file": file_name,
-                }
-            )
-            if source_time:
-                normalized["time"] = raw[source_time]
-            if source_channel:
-                normalized["channel"] = raw[source_channel]
+            normalized["title"] = normalized["title"].fillna("").astype(str)
+            normalized["_title_norm"] = normalized["_title_norm"].fillna("").astype(str)
+            normalized["_channel"] = normalized["_channel"].fillna("(sans chaine)").astype(str).str.strip()
 
             frames.append(normalized)
-            LOGGER.info("Parquet charge: %s | lignes=%s", file_name, len(normalized))
+            LOGGER.info("Clean parquet charge: %s | lignes=%s", file_name, len(normalized))
         except Exception as exc:
             LOGGER.exception("Lecture impossible sur %s: %s", file_name, exc)
             issues.append(f"Lecture impossible: {file_name} ({exc})")
@@ -255,56 +226,7 @@ def load_parquets_from_folder(
         return pd.DataFrame(), issues
 
     combined = pd.concat(frames, ignore_index=True, sort=False)
-    try:
-        time_col = "time" if "time" in combined.columns else None
-        combined["_date"] = parse_datetime(combined, "date", time_col)
-    except Exception as exc:
-        LOGGER.exception("Erreur parse_datetime pendant le chargement: %s", exc)
-        issues.append(f"Erreur pendant le parsing des dates: {exc}")
-        return pd.DataFrame(), issues
-
-    combined = combined[combined["_date"].notna()].copy()
-    if combined.empty:
-        issues.append("Aucune date valide apres parsing.")
-        return combined, issues
-
-    combined["_title_norm"] = combined["title"].fillna("").astype(str).map(normalize_text)
-    if "channel" in combined.columns:
-        if normalize_channels:
-            combined["_channel"] = combined["channel"].map(normalize_channel)
-        else:
-            combined["_channel"] = combined["channel"].fillna("").astype(str).str.strip()
-    else:
-        combined["_channel"] = "(sans chaine)"
-    drop_cols = [col for col in ("date", "time") if col in combined.columns]
-    if drop_cols:
-        combined = combined.drop(columns=drop_cols)
     return combined, issues
-
-
-def parse_datetime(df: pd.DataFrame, date_col: str, time_col: Optional[str]) -> pd.Series:
-    dt = pd.to_datetime(df[date_col], errors="coerce", dayfirst=True)
-    if not time_col or time_col not in df.columns:
-        return dt
-
-    clean_time = df[time_col].astype(str).str.strip().str.lower()
-    clean_time = clean_time.str.replace("h", ":", regex=False)
-    clean_time = clean_time.str.replace(r"[^0-9:]", "", regex=True)
-
-    def normalize_clock(x: str) -> str:
-        if not x or x == "nan":
-            return ""
-        if x.isdigit() and len(x) == 4:
-            return f"{x[:2]}:{x[2:]}:00"
-        if re.match(r"^\d{1,2}:\d{2}$", x):
-            return x + ":00"
-        if re.match(r"^\d{1,2}:\d{2}:\d{2}$", x):
-            return x
-        return ""
-
-    fixed = clean_time.map(normalize_clock)
-    combo = pd.to_datetime(dt.dt.date.astype(str) + " " + fixed, errors="coerce")
-    return combo.where(combo.notna(), dt)
 
 
 def prepare_keywords(keywords: List[str]) -> List[str]:
@@ -475,18 +397,18 @@ def apply_time_axis_controls(fig) -> None:
 
 st.title("INA - Recherche de dictionnaires (version simplifiee)")
 st.caption("Comptage de mots-cles dans les titres, stats descriptives, top chaines, et series temporelles.")
-normalize_channels = True
 
 with st.expander("Donnees", expanded=False):
-    st.write("Chargement automatique de tous les fichiers `.parquet` du dossier local `data/`.")
+    st.write("Chargement des fichiers `*_clean.parquet` depuis le snapshot actif `data/clean/CURRENT`.")
 
-data_signature = parquet_signature(DATA_DIR)
-df_base, load_issues = load_parquets_from_folder(DATA_DIR, data_signature, normalize_channels=normalize_channels)
+active_clean_dir = resolve_active_clean_dir(CLEAN_ROOT)
+data_signature = parquet_signature(active_clean_dir.as_posix())
+df_base, load_issues = load_clean_parquets_from_folder(active_clean_dir.as_posix(), data_signature)
 for issue in load_issues:
     st.warning(issue)
 
 if df_base.empty:
-    st.warning("Aucune donnee chargee (aucun fichier `.parquet` lisible dans `data/`).")
+    st.warning(f"Aucune donnee clean chargee dans `{active_clean_dir.as_posix()}`.")
     st.stop()
 
 if "dictionaries" not in st.session_state:
@@ -499,8 +421,7 @@ st.session_state["dictionaries"] = dictionaries
 
 columns = list(df_base.columns)
 title_col = "title" if "title" in columns else None
-has_source_channel = "channel" in columns
-channel_col = "_channel" if "_channel" in columns else None
+has_source_channel = "_channel" in columns
 
 if not title_col or "_date" not in columns:
     st.error("Colonnes minimales introuvables: il faut au moins une colonne titre et une colonne date.")

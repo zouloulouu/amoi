@@ -1,5 +1,9 @@
 # Raw Excel exports are intentionally kept out of Git.
 data/*.xlsx
+data/raw/**/*.xlsx
+data/raw/**/*.parquet
+data/clean/**/*.parquet
+data/clean/CURRENT
 __pycache__/
 *.pyc
 logs/
