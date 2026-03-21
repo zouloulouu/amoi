@@ -647,8 +647,22 @@ apply_time_axis_controls(fig_vol)
 fig_vol.update_layout(height=420)
 st.plotly_chart(fig_vol, width="stretch")
 
-if up_norm or down_norm:
-    st.subheader("Sens du signal")
+st.subheader("Sens du signal")
+if not (up_norm or down_norm):
+    st.info("Aucun mot-cle UP/DOWN dans le dictionnaire de ce theme. Ajoute des termes pour activer le signal.")
+else:
+    up_total = int(stats["up_titles"].sum())
+    down_total = int(stats["down_titles"].sum())
+    non_zero_periods = int((stats["net_signal"] != 0).sum())
+    st.caption(
+        f"UP={up_total} | DOWN={down_total} | periodes avec signal net non nul={non_zero_periods}/{len(stats)}"
+    )
+    if up_total == 0 and down_total == 0:
+        st.warning(
+            "Aucun titre n'a active les termes UP/DOWN sur la periode/filtres courants. "
+            "Essaie d'elargir la periode ou de retirer des filtres chaines."
+        )
+
     signal_series = st.multiselect(
         "Series a afficher",
         options=["net_signal", "up_titles", "down_titles"],
