@@ -5,7 +5,7 @@ import re
 import unicodedata
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import plotly.express as px
@@ -174,22 +174,44 @@ def load_dictionaries(path: str) -> Dict[str, Dict[str, List[str]]]:
 
 def save_dictionaries(path: str, dictionaries: Dict[str, Dict[str, List[str]]]) -> None:
     normalized = normalize_dictionaries_payload(dictionaries)
-    with open(path, "w", encoding="utf-8") as f:
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(normalized, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, path)
 
 
-@st.cache_data(show_spinner=False)
-def load_parquets_from_folder(folder: str) -> pd.DataFrame:
+def parquet_signature(folder: str) -> Tuple[Tuple[str, int, int], ...]:
+    if not os.path.isdir(folder):
+        return tuple()
+    signature: List[Tuple[str, int, int]] = []
+    for name in sorted(os.listdir(folder)):
+        if not str(name).lower().endswith(".parquet"):
+            continue
+        path = os.path.join(folder, name)
+        try:
+            stat = os.stat(path)
+            signature.append((name, int(stat.st_size), int(stat.st_mtime_ns)))
+        except OSError as exc:
+            LOGGER.warning("Stat impossible sur %s: %s", path, exc)
+    return tuple(signature)
+
+
+@st.cache_resource(show_spinner=False)
+def load_parquets_from_folder(
+    folder: str, signature: Tuple[Tuple[str, int, int], ...], normalize_channels: bool
+) -> Tuple[pd.DataFrame, List[str]]:
+    issues: List[str] = []
     if not os.path.isdir(folder):
         LOGGER.warning("Dossier data introuvable: %s", folder)
-        return pd.DataFrame()
-    files = [f for f in os.listdir(folder) if str(f).lower().endswith(".parquet")]
-    if not files:
+        issues.append(f"Dossier data introuvable: {folder}")
+        return pd.DataFrame(), issues
+    if not signature:
         LOGGER.warning("Aucun fichier parquet trouve dans %s", folder)
-        return pd.DataFrame()
+        issues.append(f"Aucun fichier `.parquet` trouve dans {folder}")
+        return pd.DataFrame(), issues
 
     frames = []
-    for file_name in sorted(files):
+    for file_name, _, _ in signature:
         path = os.path.join(folder, file_name)
         try:
             schema_names = pq.ParquetFile(path).schema.names
@@ -201,7 +223,7 @@ def load_parquets_from_folder(folder: str) -> pd.DataFrame:
 
             if not source_title or not source_date:
                 LOGGER.warning("Colonnes minimales absentes dans %s", file_name)
-                st.warning(f"Colonnes minimales absentes dans {file_name} (titre/date).")
+                issues.append(f"Colonnes minimales absentes dans {file_name} (titre/date).")
                 continue
 
             selected_columns = [source_title, source_date]
@@ -227,9 +249,37 @@ def load_parquets_from_folder(folder: str) -> pd.DataFrame:
             LOGGER.info("Parquet charge: %s | lignes=%s", file_name, len(normalized))
         except Exception as exc:
             LOGGER.exception("Lecture impossible sur %s: %s", file_name, exc)
-            st.warning(f"Lecture impossible: {file_name} ({exc})")
+            issues.append(f"Lecture impossible: {file_name} ({exc})")
 
-    return pd.concat(frames, ignore_index=True, sort=False) if frames else pd.DataFrame()
+    if not frames:
+        return pd.DataFrame(), issues
+
+    combined = pd.concat(frames, ignore_index=True, sort=False)
+    try:
+        time_col = "time" if "time" in combined.columns else None
+        combined["_date"] = parse_datetime(combined, "date", time_col)
+    except Exception as exc:
+        LOGGER.exception("Erreur parse_datetime pendant le chargement: %s", exc)
+        issues.append(f"Erreur pendant le parsing des dates: {exc}")
+        return pd.DataFrame(), issues
+
+    combined = combined[combined["_date"].notna()].copy()
+    if combined.empty:
+        issues.append("Aucune date valide apres parsing.")
+        return combined, issues
+
+    combined["_title_norm"] = combined["title"].fillna("").astype(str).map(normalize_text)
+    if "channel" in combined.columns:
+        if normalize_channels:
+            combined["_channel"] = combined["channel"].map(normalize_channel)
+        else:
+            combined["_channel"] = combined["channel"].fillna("").astype(str).str.strip()
+    else:
+        combined["_channel"] = "(sans chaine)"
+    drop_cols = [col for col in ("date", "time") if col in combined.columns]
+    if drop_cols:
+        combined = combined.drop(columns=drop_cols)
+    return combined, issues
 
 
 def parse_datetime(df: pd.DataFrame, date_col: str, time_col: Optional[str]) -> pd.Series:
@@ -282,8 +332,12 @@ def add_tagging_columns_hier(
     context_norm: List[str],
     up_norm: List[str],
     down_norm: List[str],
+    title_norm_col: Optional[str] = None,
 ) -> pd.DataFrame:
-    titles_norm = df[title_col].fillna("").astype(str).map(normalize_text)
+    if title_norm_col and title_norm_col in df.columns:
+        titles_norm = df[title_norm_col].fillna("").astype(str)
+    else:
+        titles_norm = df[title_col].fillna("").astype(str).map(normalize_text)
 
     df["occ_concept"] = titles_norm.map(lambda x: count_occurrences(x, concept_norm))
     # Contexte conserve pour compatibilite JSON, mais non utilise dans le matching.
@@ -421,12 +475,17 @@ def apply_time_axis_controls(fig) -> None:
 
 st.title("INA - Recherche de dictionnaires (version simplifiee)")
 st.caption("Comptage de mots-cles dans les titres, stats descriptives, top chaines, et series temporelles.")
+normalize_channels = True
 
 with st.expander("Donnees", expanded=False):
     st.write("Chargement automatique de tous les fichiers `.parquet` du dossier local `data/`.")
 
-df_raw = load_parquets_from_folder(DATA_DIR)
-if df_raw.empty:
+data_signature = parquet_signature(DATA_DIR)
+df_base, load_issues = load_parquets_from_folder(DATA_DIR, data_signature, normalize_channels=normalize_channels)
+for issue in load_issues:
+    st.warning(issue)
+
+if df_base.empty:
     st.warning("Aucune donnee chargee (aucun fichier `.parquet` lisible dans `data/`).")
     st.stop()
 
@@ -438,19 +497,17 @@ if not dictionaries:
     dictionaries = clone_dictionaries(DEFAULT_DICTIONARIES)
 st.session_state["dictionaries"] = dictionaries
 
-columns = list(df_raw.columns)
+columns = list(df_base.columns)
 title_col = "title" if "title" in columns else None
-date_col = "date" if "date" in columns else None
-time_col = "time" if "time" in columns else None
-channel_col = "channel" if "channel" in columns else None
+has_source_channel = "channel" in columns
+channel_col = "_channel" if "_channel" in columns else None
 
-if not title_col or not date_col:
+if not title_col or "_date" not in columns:
     st.error("Colonnes minimales introuvables: il faut au moins une colonne titre et une colonne date.")
     st.stop()
 
 st.sidebar.header("Parametres")
 frequency = st.sidebar.selectbox("Frequence", ["Mensuelle", "Trimestrielle", "Annuelle"], index=0)
-normalize_channels = True
 with st.sidebar.expander("Diagnostics", expanded=False):
     st.caption(f"Log erreurs: `{LOG_PATH.as_posix()}`")
     if st.checkbox("Afficher les 30 dernieres lignes du log", value=False):
@@ -487,8 +544,10 @@ with st.expander("Dictionnaires", expanded=False):
         "2. Renseigne Concept + Sens (UP/DOWN), puis clique `Enregistrer dictionnaire`."
     )
 
-    new_theme = st.text_input("Nouveau theme", value="")
-    if st.button("Ajouter un theme"):
+    with st.form("add_theme_form", clear_on_submit=True):
+        new_theme = st.text_input("Nouveau theme", value="")
+        add_theme_submitted = st.form_submit_button("Ajouter un theme")
+    if add_theme_submitted:
         nt = new_theme.strip()
         if not nt:
             st.warning("Nom de theme vide.")
@@ -508,48 +567,47 @@ with st.expander("Dictionnaires", expanded=False):
 
     current_theme_dict = normalize_theme_dictionary(dictionaries.get(theme, empty_theme_dictionary()))
 
-    concept_text = st.text_area(
-        f"Concept ({theme})",
-        value="\n".join(current_theme_dict["concept"]),
-        height=140,
-    )
-    up_text = st.text_area(
-        f"Sens UP ({theme})",
-        value="\n".join(current_theme_dict["up"]),
-        height=120,
-    )
-    down_text = st.text_area(
-        f"Sens DOWN ({theme})",
-        value="\n".join(current_theme_dict["down"]),
-        height=120,
-    )
+    with st.form("edit_theme_form"):
+        concept_text = st.text_area(
+            f"Concept ({theme})",
+            value="\n".join(current_theme_dict["concept"]),
+            height=140,
+        )
+        up_text = st.text_area(
+            f"Sens UP ({theme})",
+            value="\n".join(current_theme_dict["up"]),
+            height=120,
+        )
+        down_text = st.text_area(
+            f"Sens DOWN ({theme})",
+            value="\n".join(current_theme_dict["down"]),
+            height=120,
+        )
+        save_theme_submitted = st.form_submit_button("Enregistrer dictionnaire")
+    if save_theme_submitted:
+        dictionaries[theme] = {
+            "concept": [k.strip() for k in concept_text.splitlines() if k.strip()],
+            "context": current_theme_dict.get("context", []),
+            "up": [k.strip() for k in up_text.splitlines() if k.strip()],
+            "down": [k.strip() for k in down_text.splitlines() if k.strip()],
+        }
+        st.session_state["dictionaries"] = dictionaries
+        try:
+            save_dictionaries(DICTIONARY_PATH, dictionaries)
+            st.success("Dictionnaire enregistre.")
+        except Exception as exc:
+            LOGGER.exception("Ecriture dictionnaire impossible (enregistrement): %s", exc)
+            st.warning(f"Ecriture du fichier dictionnaire impossible ({exc}).")
 
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("Enregistrer dictionnaire", width="stretch"):
-            dictionaries[theme] = {
-                "concept": [k.strip() for k in concept_text.splitlines() if k.strip()],
-                "context": current_theme_dict.get("context", []),
-                "up": [k.strip() for k in up_text.splitlines() if k.strip()],
-                "down": [k.strip() for k in down_text.splitlines() if k.strip()],
-            }
-            st.session_state["dictionaries"] = dictionaries
-            try:
-                save_dictionaries(DICTIONARY_PATH, dictionaries)
-                st.success("Dictionnaire enregistre.")
-            except Exception as exc:
-                LOGGER.exception("Ecriture dictionnaire impossible (enregistrement): %s", exc)
-                st.warning(f"Ecriture du fichier dictionnaire impossible ({exc}).")
-    with c2:
-        if st.button("Reset dictionnaires par defaut", width="stretch"):
-            st.session_state["dictionaries"] = clone_dictionaries(DEFAULT_DICTIONARIES)
-            st.session_state["theme"] = sorted(DEFAULT_DICTIONARIES.keys())[0]
-            try:
-                save_dictionaries(DICTIONARY_PATH, st.session_state["dictionaries"])
-            except Exception as exc:
-                LOGGER.exception("Ecriture dictionnaire impossible (reset): %s", exc)
-                st.warning(f"Ecriture du fichier dictionnaire impossible ({exc}).")
-            st.rerun()
+    if st.button("Reset dictionnaires par defaut", width="stretch"):
+        st.session_state["dictionaries"] = clone_dictionaries(DEFAULT_DICTIONARIES)
+        st.session_state["theme"] = sorted(DEFAULT_DICTIONARIES.keys())[0]
+        try:
+            save_dictionaries(DICTIONARY_PATH, st.session_state["dictionaries"])
+        except Exception as exc:
+            LOGGER.exception("Ecriture dictionnaire impossible (reset): %s", exc)
+            st.warning(f"Ecriture du fichier dictionnaire impossible ({exc}).")
+        st.rerun()
 
 theme_dict = normalize_theme_dictionary(st.session_state["dictionaries"].get(theme, empty_theme_dictionary()))
 concept_norm = prepare_keywords(theme_dict["concept"])
@@ -560,19 +618,37 @@ if not concept_norm:
     st.info("Ajoute au moins un mot-cle dans `Concept` pour le theme selectionne.")
     st.stop()
 
-df = df_raw.copy()
-try:
-    df["_date"] = parse_datetime(df, date_col, time_col)
-except Exception as exc:
-    stop_with_error_log("Erreur pendant le parsing des dates.", "parse_datetime", exc)
+tagging_cache = st.session_state.setdefault("_tagged_theme_cache", {})
+cache_payload = {
+    "data_signature": data_signature,
+    "theme": theme,
+    "concept": concept_norm,
+    "up": up_norm,
+    "down": down_norm,
+}
+tag_cache_key = json.dumps(cache_payload, ensure_ascii=False, sort_keys=True)
 
-df = df[df["_date"].notna()].copy()
-if df.empty:
-    st.error("Aucune date valide apres parsing.")
-    st.stop()
+if tag_cache_key not in tagging_cache:
+    try:
+        tagging_cache[tag_cache_key] = add_tagging_columns_hier(
+            df_base.copy(),
+            title_col=title_col,
+            concept_norm=concept_norm,
+            context_norm=[],
+            up_norm=up_norm,
+            down_norm=down_norm,
+            title_norm_col="_title_norm",
+        )
+    except Exception as exc:
+        stop_with_error_log("Erreur pendant le tagging des titres.", "add_tagging_columns_hier", exc)
+    while len(tagging_cache) > 2:
+        oldest_key = next(iter(tagging_cache.keys()))
+        tagging_cache.pop(oldest_key, None)
 
-min_date_ts = df["_date"].min()
-max_date_ts = df["_date"].max()
+df_tagged = tagging_cache[tag_cache_key]
+
+min_date_ts = df_tagged["_date"].min()
+max_date_ts = df_tagged["_date"].max()
 default_start_ts = max_date_ts - pd.DateOffset(years=2)
 if default_start_ts < min_date_ts:
     default_start_ts = min_date_ts
@@ -586,30 +662,10 @@ try:
 except Exception as exc:
     stop_with_error_log("Erreur pendant la creation du filtre de periode.", "sidebar.slider Periode", exc)
 
-df_period = df[(df["_date"] >= pd.Timestamp(date_start)) & (df["_date"] <= pd.Timestamp(date_end))].copy()
+df_period = df_tagged[(df_tagged["_date"] >= pd.Timestamp(date_start)) & (df_tagged["_date"] <= pd.Timestamp(date_end))].copy()
 if df_period.empty:
     st.warning("Aucune donnee dans la periode selectionnee.")
     st.stop()
-
-if channel_col:
-    if normalize_channels:
-        df_period["_channel"] = df_period[channel_col].map(normalize_channel)
-    else:
-        df_period["_channel"] = df_period[channel_col].fillna("").astype(str).str.strip()
-else:
-    df_period["_channel"] = "(sans chaine)"
-
-try:
-    df_period = add_tagging_columns_hier(
-        df_period,
-        title_col=title_col,
-        concept_norm=concept_norm,
-        context_norm=[],
-        up_norm=up_norm,
-        down_norm=down_norm,
-    )
-except Exception as exc:
-    stop_with_error_log("Erreur pendant le tagging des titres.", "add_tagging_columns_hier", exc)
 
 all_channels = sorted(c for c in df_period["_channel"].dropna().unique().tolist() if str(c).strip())
 if not all_channels:
@@ -695,7 +751,7 @@ if up_norm or down_norm:
 st.subheader("Statistiques descriptives")
 st.dataframe(desc, width="stretch")
 
-if channel_col:
+if has_source_channel:
     st.subheader("Top 10 chaines (sur la periode)")
     st.caption("Calcule sur la periode choisie, avant application du filtre chaine.")
     st.dataframe(top_channels, width="stretch")

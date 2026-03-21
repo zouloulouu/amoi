@@ -1,5 +1,5 @@
-streamlit
-pandas
-plotly
-pyarrow
+streamlit==1.53.1
+pandas==2.3.3
+plotly==6.5.2
+pyarrow==23.0.0
 
