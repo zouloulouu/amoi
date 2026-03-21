@@ -683,7 +683,7 @@ def parquet_signature(folder: str) -> Tuple[Tuple[str, int, int], ...]:
     return tuple(signature)
 
 
-@st.cache_resource(show_spinner=False)
+@st.cache_resource(show_spinner="Nettoyage et harmonisation des fichiers parquet en cours...")
 def load_parquets_from_folder(
     folder: str, signature: Tuple[Tuple[str, int, int], ...], normalize_channels: bool
 ) -> Tuple[pd.DataFrame, List[str], pd.DataFrame]:
