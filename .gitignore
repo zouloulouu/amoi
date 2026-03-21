@@ -2,8 +2,11 @@
 data/*.xlsx
 data/raw/**/*.xlsx
 data/raw/**/*.parquet
-data/clean/**/*.parquet
+data/clean/**/*.json
+data/clean/.gitkeep
+data/clean/README.md
 data/clean/CURRENT
+data/clean/CURRENT.example
 __pycache__/
 *.pyc
 logs/
