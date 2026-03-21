@@ -236,6 +236,35 @@ def clean_title(value: Any):
     return cleaned if cleaned else pd.NA
 
 
+def normalize_text_series(series: pd.Series) -> pd.Series:
+    out = series.astype("string")
+    out = out.str.replace("\u00a0", " ", regex=False).str.lower()
+    out = out.str.replace(r"\s+", " ", regex=True).str.strip()
+    return out.replace("", pd.NA)
+
+
+def strip_accents_series(series: pd.Series) -> pd.Series:
+    out = series.astype("string")
+    out = out.str.normalize("NFD").str.replace(r"[\u0300-\u036f]", "", regex=True)
+    return out.replace("", pd.NA)
+
+
+def clean_title_series(series: pd.Series) -> pd.Series:
+    out = normalize_text_series(series)
+    out = strip_accents_series(out)
+    out = out.str.replace(r"[^\w\s]", " ", regex=True)
+    out = out.str.replace(r"\s+", " ", regex=True).str.strip()
+    return out.replace("", pd.NA)
+
+
+def clean_title_series_from_normalized(normalized_series: pd.Series) -> pd.Series:
+    out = normalized_series.astype("string")
+    out = strip_accents_series(out)
+    out = out.str.replace(r"[^\w\s]", " ", regex=True)
+    out = out.str.replace(r"\s+", " ", regex=True).str.strip()
+    return out.replace("", pd.NA)
+
+
 def _normalize_text_for_key(value: Any) -> str:
     normalized = normalize_text(value)
     if _is_missing_value(normalized):
@@ -285,6 +314,30 @@ def parse_duration_to_seconds(value: Any) -> float:
     return float("nan")
 
 
+def parse_duration_series_to_seconds(series: pd.Series) -> pd.Series:
+    values = series.astype("string").str.strip()
+    numeric_mask = values.str.match(r"^\d+(\.\d+)?$", na=False)
+    out = pd.to_numeric(values.where(numeric_mask), errors="coerce").astype("float64")
+
+    cleaned = values.str.replace(r"[^0-9:]", "", regex=True)
+    hms = cleaned.str.extract(r"^(?P<h>\d{1,3}):(?P<m>\d{1,2}):(?P<s>\d{1,2})(?::(?P<c>\d{1,2}))?$")
+    h = pd.to_numeric(hms["h"], errors="coerce")
+    m = pd.to_numeric(hms["m"], errors="coerce")
+    s = pd.to_numeric(hms["s"], errors="coerce")
+    c = pd.to_numeric(hms["c"], errors="coerce").fillna(0)
+    valid_hms = h.notna() & m.notna() & s.notna() & (m < 60) & (s < 60)
+    hms_seconds = ((h * 3600) + (m * 60) + s + (c / 100)).astype("float64")
+    out = out.where(out.notna(), hms_seconds.where(valid_hms))
+
+    ms = cleaned.str.extract(r"^(?P<m>\d{1,3}):(?P<s>\d{1,2})$")
+    mm = pd.to_numeric(ms["m"], errors="coerce")
+    ss = pd.to_numeric(ms["s"], errors="coerce")
+    valid_ms = mm.notna() & ss.notna() & (ss < 60)
+    ms_seconds = ((mm * 60) + ss).astype("float64")
+    out = out.where(out.notna(), ms_seconds.where(valid_ms))
+    return out
+
+
 def harmonize_channel(value: Any) -> Any:
     if _is_missing_value(value):
         return pd.NA
@@ -307,6 +360,21 @@ def harmonize_channel(value: Any) -> Any:
     if "tf1" in key:
         return "TF1"
     return str(value).strip()
+
+
+def harmonize_channel_series(series: pd.Series) -> pd.Series:
+    raw = series.astype("string")
+    key = strip_accents_series(normalize_text_series(raw))
+    key = key.str.replace(r"[^\w\s]", " ", regex=True)
+    key = key.str.replace(r"\s+", " ", regex=True).str.strip()
+    mapped = key.map(CHANNEL_MAPPING).astype("string")
+    mapped = mapped.mask(mapped.isna() & key.str.contains("france 2", na=False), "France 2")
+    mapped = mapped.mask(mapped.isna() & key.str.contains("france 3", na=False), "France 3")
+    mapped = mapped.mask(mapped.isna() & key.str.contains("bfm") & key.str.contains("tv"), "BFMTV")
+    mapped = mapped.mask(mapped.isna() & key.str.contains("france inter", na=False), "France Inter")
+    mapped = mapped.mask(mapped.isna() & key.str.contains("tf1", na=False), "TF1")
+    mapped = mapped.mask(mapped.isna(), raw.str.strip())
+    return mapped.replace("", pd.NA)
 
 
 def normalize_channel(value: Any) -> Any:
@@ -344,6 +412,35 @@ def standardize_emission(row: pd.Series):
     return pd.NA
 
 
+def _build_content_text(df: pd.DataFrame) -> pd.Series:
+    part1 = normalize_text_series(df["titre_propre"])
+    part2 = normalize_text_series(df["titre_programme"])
+    part3 = normalize_text_series(df["titre_collection"])
+    content = part1.fillna("") + " " + part2.fillna("") + " " + part3.fillna("")
+    return content.str.replace(r"\s+", " ", regex=True).str.strip()
+
+
+def classify_content_series(df: pd.DataFrame, content: Optional[pd.Series] = None) -> pd.Series:
+    content = _build_content_text(df) if content is None else content
+    is_plateau = content.str.contains(r"\bplateau\b", regex=True, na=False)
+    is_edition = content.str.contains(r"programme du|emission du|émission du", regex=True, na=False)
+    labels = np.select([is_plateau, is_edition], ["plateau", "edition_complete"], default="sujet")
+    return pd.Series(labels, index=df.index, dtype="string")
+
+
+def standardize_emission_series(df: pd.DataFrame, content: Optional[pd.Series] = None) -> pd.Series:
+    content = _build_content_text(df) if content is None else content
+    compact = content.str.replace(" ", "", regex=False)
+    is_20h = compact.str.contains(r"20heures|20h", regex=True, na=False)
+    is_premiere = content.str.contains(r"premiere edition|première édition|premiereedition|premièreédition", regex=True, na=False) | compact.str.contains(
+        r"premiereedition|premièreédition", regex=True, na=False
+    )
+    out = pd.Series(pd.NA, index=df.index, dtype="string")
+    out = out.mask(is_20h, "20 heures")
+    out = out.mask(~is_20h & is_premiere, "Premiere edition")
+    return out
+
+
 def _resolve_alias_columns(df: pd.DataFrame) -> pd.DataFrame:
     source_by_canon = {canon_colname(col): col for col in df.columns}
     renamed = df.copy()
@@ -379,9 +476,13 @@ def clean_file(df: pd.DataFrame, source_name: Optional[str] = None) -> pd.DataFr
     out["titre_propre"] = _coalesce_text_columns(out, ["titre_propre", "titre_programme", "titre_collection"]).astype("string")
     out["titre_programme"] = out["titre_programme"].astype("string")
     out["titre_collection"] = out["titre_collection"].astype("string")
-    out["genre"] = out["genre"].map(normalize_text).astype("string")
+    titre_propre_norm = normalize_text_series(out["titre_propre"])
+    titre_programme_norm = normalize_text_series(out["titre_programme"])
+    titre_collection_norm = normalize_text_series(out["titre_collection"])
+
+    out["genre"] = normalize_text_series(out["genre"]).astype("string")
     out["url_notice"] = out["url_notice"].astype("string")
-    out["chaine"] = out["chaine"].map(harmonize_channel).astype("string")
+    out["chaine"] = harmonize_channel_series(out["chaine"]).astype("string")
     out["duree"] = out["duree"].astype("string")
     out["heure_diffusion"] = out["heure_diffusion"].astype("string")
 
@@ -389,17 +490,19 @@ def clean_file(df: pd.DataFrame, source_name: Optional[str] = None) -> pd.DataFr
     out["date_diffusion"] = pd.to_datetime(out["date_diffusion"], errors="coerce", dayfirst=True)
 
     out["inflation_extended"] = pd.to_numeric(out["inflation_extended"], errors="coerce").round().astype("Int64")
-    out["duree_sec"] = out["duree"].map(parse_duration_to_seconds)
+    out["duree_sec"] = parse_duration_series_to_seconds(out["duree"])
 
     date_base = out["date_diffusion"].where(out["date_diffusion"].notna(), out["date"])
     out["annee"] = date_base.dt.year.astype("Int64")
     out["mois"] = date_base.dt.month.astype("Int64")
     out["month"] = out["mois"]
     out["ym"] = date_base.dt.to_period("M").astype("string")
-    out["clean_titre"] = out["titre_propre"].map(clean_title).astype("string")
-    out["clean_programme"] = out["titre_programme"].map(clean_title).astype("string")
-    out["type_contenu"] = out.apply(classify_content, axis=1).astype("string")
-    out["emission_std"] = out.apply(standardize_emission, axis=1).astype("string")
+    out["clean_titre"] = clean_title_series_from_normalized(titre_propre_norm).astype("string")
+    out["clean_programme"] = clean_title_series_from_normalized(titre_programme_norm).astype("string")
+    content_text = (titre_propre_norm.fillna("") + " " + titre_programme_norm.fillna("") + " " + titre_collection_norm.fillna(""))
+    content_text = content_text.str.replace(r"\s+", " ", regex=True).str.strip()
+    out["type_contenu"] = classify_content_series(out, content=content_text).astype("string")
+    out["emission_std"] = standardize_emission_series(out, content=content_text).astype("string")
     out["has_url_notice"] = (
         out["url_notice"].notna() & out["url_notice"].str.strip().ne("").fillna(False)
     ).astype("int8")
@@ -607,7 +710,7 @@ def load_parquets_from_folder(
             cleaned = clean_file(raw, source_name=file_name)
 
             if normalize_channels:
-                cleaned["chaine"] = cleaned["chaine"].map(harmonize_channel).astype("string")
+                cleaned["chaine"] = harmonize_channel_series(cleaned["chaine"]).astype("string")
                 cleaned["channel"] = cleaned["chaine"].astype("string")
                 cleaned["_channel"] = cleaned["chaine"].fillna("(sans chaine)").astype("string").replace("", "(sans chaine)")
 
