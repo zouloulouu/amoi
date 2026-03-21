@@ -1,0 +1,43 @@
+{
+  "snapshot": "v20260321_210503_utc",
+  "clean_dir": "data/clean/v20260321_210503_utc",
+  "files": [
+    {
+      "file": "ina_inflation_stats_bfmtv_general_clean.parquet",
+      "rows": 814866,
+      "title_empty_ratio": 0.0,
+      "date_null_ratio": 0.0,
+      "row_hash_duplicate_ratio": 0.0
+    },
+    {
+      "file": "ina_inflation_stats_fr2_clean.parquet",
+      "rows": 277087,
+      "title_empty_ratio": 0.0,
+      "date_null_ratio": 0.0,
+      "row_hash_duplicate_ratio": 0.0
+    },
+    {
+      "file": "ina_inflation_stats_france3_jtelevise_clean.parquet",
+      "rows": 429652,
+      "title_empty_ratio": 0.0,
+      "date_null_ratio": 0.0,
+      "row_hash_duplicate_ratio": 0.0
+    },
+    {
+      "file": "ina_inflation_stats_france_inter_information_clean.parquet",
+      "rows": 121955,
+      "title_empty_ratio": 0.0,
+      "date_null_ratio": 0.0,
+      "row_hash_duplicate_ratio": 0.0
+    },
+    {
+      "file": "ina_merged_dedup_finalTF1_clean.parquet",
+      "rows": 291566,
+      "title_empty_ratio": 0.0,
+      "date_null_ratio": 0.0,
+      "row_hash_duplicate_ratio": 0.0
+    }
+  ],
+  "errors": [],
+  "passed": true
+}
