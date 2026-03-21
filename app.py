@@ -7,7 +7,6 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-import numpy as np
 import pandas as pd
 import plotly.express as px
 import streamlit as st
@@ -37,33 +36,6 @@ DEFAULT_DICTIONARIES: Dict[str, Dict[str, List[str]]] = {
 }
 
 REQUIRED_CLEAN_COLUMNS = ["source_file", "title", "_title_norm", "_date", "_channel"]
-TARGET_SCHEMA_COLUMNS = [
-    "id",
-    "chaine",
-    "source_file",
-    "date",
-    "date_diffusion",
-    "heure_diffusion",
-    "duree",
-    "duree_sec",
-    "month",
-    "annee",
-    "mois",
-    "ym",
-    "titre_propre",
-    "titre_collection",
-    "titre_programme",
-    "genre",
-    "url_notice",
-    "inflation_extended",
-    "clean_titre",
-    "clean_programme",
-    "type_contenu",
-    "emission_std",
-    "has_url_notice",
-    "has_titre_programme",
-    "has_titre_collection",
-]
 
 DIRECTION_UP = 1
 DIRECTION_DOWN = -1
@@ -143,316 +115,14 @@ def clone_dictionaries(dictionaries: Dict[str, Dict[str, List[str]]]) -> Dict[st
     return json.loads(json.dumps(dictionaries, ensure_ascii=False))
 
 
-def ensure_columns(df: pd.DataFrame, required_columns: List[str]) -> List[str]:
-    missing = [c for c in required_columns if c not in df.columns]
-    for col in missing:
-        df[col] = pd.NA
-    return missing
-
-
-def normalize_text(x):
-    if x is None or pd.isna(x):
-        return pd.NA
-    text = str(x).lower()
-    text = re.sub(r"\s+", " ", text).strip()
-    return text if text else pd.NA
-
-
-def strip_accents(text):
-    if text is None or pd.isna(text):
-        return pd.NA
-    value = str(text)
-    return "".join(
-        c for c in unicodedata.normalize("NFD", value) if unicodedata.category(c) != "Mn"
+def normalize_text(value: str) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = value.strip().lower()
+    text = "".join(
+        c for c in unicodedata.normalize("NFD", text) if unicodedata.category(c) != "Mn"
     )
-
-
-def clean_title(x):
-    normalized = normalize_text(x)
-    if pd.isna(normalized):
-        return pd.NA
-    no_accents = strip_accents(normalized)
-    cleaned = re.sub(r"[^a-zA-Z0-9\s]", " ", str(no_accents))
-    cleaned = re.sub(r"\s+", " ", cleaned).strip().lower()
-    return cleaned if cleaned else pd.NA
-
-
-def parse_duration_to_seconds(x) -> float:
-    if x is None or pd.isna(x):
-        return np.nan
-    raw = str(x).strip()
-    if not raw:
-        return np.nan
-    parts = raw.split(":")
-    if len(parts) not in (3, 4):
-        return np.nan
-    try:
-        h = int(parts[0])
-        m = int(parts[1])
-        s = int(parts[2])
-        centisec = int(parts[3]) if len(parts) == 4 else 0
-    except ValueError:
-        return np.nan
-    return float(h * 3600 + m * 60 + s + (centisec / 100.0))
-
-
-def harmonize_channel(x):
-    normalized = clean_title(x)
-    if pd.isna(normalized):
-        return pd.NA
-    compact = str(normalized).replace(" ", "")
-    mapping = {
-        "bfmtv": "BFMTV",
-        "bfm": "BFMTV",
-        "france2": "France 2",
-        "fr2": "France 2",
-        "f2": "France 2",
-        "tf1": "TF1",
-        "france3": "France 3",
-        "fr3": "France 3",
-        "franceinter": "France Inter",
-    }
-    if compact in mapping:
-        return mapping[compact]
-    if "franceinter" in compact:
-        return "France Inter"
-    return str(x).strip() if str(x).strip() else pd.NA
-
-
-def classify_content(row: pd.Series):
-    def _safe(v):
-        cleaned = clean_title(v)
-        return "" if pd.isna(cleaned) else str(cleaned)
-
-    text = " ".join(
-        [
-            _safe(row.get("titre_propre")),
-            _safe(row.get("titre_programme")),
-            _safe(row.get("titre_collection")),
-        ]
-    )
-    if "plateau" in text:
-        return "plateau"
-    if re.search(r"\b(?:programme du|emission du|edition du)\b", text):
-        return "edition_complete"
-    return "sujet"
-
-
-def standardize_emission(row: pd.Series):
-    def _safe(v):
-        cleaned = clean_title(v)
-        return "" if pd.isna(cleaned) else str(cleaned)
-
-    text = " ".join(
-        [
-            _safe(row.get("titre_propre")),
-            _safe(row.get("titre_programme")),
-            _safe(row.get("titre_collection")),
-        ]
-    )
-    if re.search(r"\b(?:20heures|20 heures|20h)\b", text):
-        return "20 heures"
-    if re.search(r"\bpremiere edition\b", text):
-        return "Premiere edition"
-    return pd.NA
-
-
-def clean_file(df: pd.DataFrame, source_name: Optional[str] = None) -> pd.DataFrame:
-    work = df.copy()
-    input_columns = list(work.columns)
-
-    alias_candidates = {
-        "id": ["id", "indice"],
-        "chaine": ["chaine", "_channel", "channel", "raw_channel"],
-        "date": ["date", "_date"],
-        "date_diffusion": ["date_diffusion", "raw_date"],
-        "heure_diffusion": ["heure_diffusion", "raw_time", "time"],
-        "duree": ["duree"],
-        "titre_propre": ["titre_propre", "title"],
-        "titre_collection": ["titre_collection"],
-        "titre_programme": ["titre_programme"],
-        "genre": ["genre"],
-        "url_notice": ["url_notice"],
-        "inflation_extended": ["inflation_extended"],
-        "source_file": ["source_file"],
-        "month": ["month"],
-    }
-    for target, candidates in alias_candidates.items():
-        if target in work.columns:
-            continue
-        for candidate in candidates:
-            if candidate in work.columns:
-                work[target] = work[candidate]
-                break
-
-    if "source_file" not in work.columns or work["source_file"].isna().all():
-        work["source_file"] = source_name if source_name else pd.NA
-
-    created_columns = ensure_columns(work, TARGET_SCHEMA_COLUMNS)
-
-    work["date"] = pd.to_datetime(work["date"], errors="coerce", dayfirst=True)
-    work["date_diffusion"] = pd.to_datetime(work["date_diffusion"], errors="coerce", dayfirst=True)
-    work["date"] = work["date"].where(work["date"].notna(), work["date_diffusion"])
-    work["date_diffusion"] = work["date_diffusion"].where(work["date_diffusion"].notna(), work["date"])
-    work["inflation_extended"] = pd.to_numeric(work["inflation_extended"], errors="coerce").astype("Int64")
-
-    parsed_duree_sec = work["duree"].map(parse_duration_to_seconds)
-    existing_duree_sec = pd.to_numeric(work["duree_sec"], errors="coerce")
-    work["duree_sec"] = existing_duree_sec.where(existing_duree_sec.notna(), parsed_duree_sec)
-
-    for col in [
-        "chaine",
-        "source_file",
-        "heure_diffusion",
-        "duree",
-        "month",
-        "titre_propre",
-        "titre_collection",
-        "titre_programme",
-        "genre",
-        "url_notice",
-    ]:
-        work[col] = work[col].astype("string").str.strip()
-        work[col] = work[col].replace("", pd.NA)
-
-    work["chaine"] = work["chaine"].map(harmonize_channel).astype("string")
-    work["clean_titre"] = work["titre_propre"].map(clean_title).astype("string")
-    work["clean_programme"] = work["titre_programme"].map(clean_title).astype("string")
-
-    base_date = pd.to_datetime(work["date"], errors="coerce")
-    work["annee"] = base_date.dt.year.astype("Int64")
-    work["mois"] = base_date.dt.month.astype("Int64")
-    work["ym"] = base_date.dt.strftime("%Y-%m").astype("string")
-    work["ym"] = work["ym"].where(base_date.notna(), pd.NA)
-    work["month"] = work["month"].where(work["month"].notna(), work["ym"]).astype("string")
-
-    text_combo = (
-        work["clean_titre"].fillna("")
-        + " "
-        + work["clean_programme"].fillna("")
-        + " "
-        + work["titre_collection"].map(clean_title).fillna("")
-    ).str.strip()
-    is_plateau = text_combo.str.contains(r"\bplateau\b", regex=True, na=False)
-    is_edition = text_combo.str.contains(r"\b(?:programme du|emission du|edition du)\b", regex=True, na=False)
-
-    work["type_contenu"] = pd.Series("sujet", index=work.index, dtype="string")
-    work.loc[is_edition, "type_contenu"] = "edition_complete"
-    work.loc[is_plateau, "type_contenu"] = "plateau"
-
-    work["emission_std"] = pd.Series(pd.NA, index=work.index, dtype="string")
-    work.loc[text_combo.str.contains(r"\b(?:20heures|20 heures|20h)\b", regex=True, na=False), "emission_std"] = (
-        "20 heures"
-    )
-    work.loc[text_combo.str.contains(r"\bpremiere edition\b", regex=True, na=False), "emission_std"] = (
-        "Premiere edition"
-    )
-
-    has_url = work["url_notice"].notna() & work["url_notice"].astype("string").str.strip().ne("")
-    has_prog = work["titre_programme"].notna() & work["titre_programme"].astype("string").str.strip().ne("")
-    has_coll = work["titre_collection"].notna() & work["titre_collection"].astype("string").str.strip().ne("")
-    work["has_url_notice"] = has_url.astype("Int8")
-    work["has_titre_programme"] = has_prog.astype("Int8")
-    work["has_titre_collection"] = has_coll.astype("Int8")
-
-    dedup_subset = [c for c in ["chaine", "date", "heure_diffusion", "titre_propre", "titre_programme"] if c in work]
-    before_dedup = len(work)
-    if dedup_subset:
-        work = work.drop_duplicates(subset=dedup_subset, keep="first").copy()
-    duplicates_removed = before_dedup - len(work)
-
-    work["title"] = work["titre_propre"].fillna(work["titre_programme"]).fillna(work["titre_collection"]).astype(
-        "string"
-    )
-    work["_title_norm"] = work["title"].map(clean_title).astype("string")
-    work["_date"] = pd.to_datetime(work["date"], errors="coerce")
-    work["_date"] = work["_date"].where(work["_date"].notna(), pd.to_datetime(work["date_diffusion"], errors="coerce"))
-    work["_channel"] = work["chaine"].astype("string")
-
-    ensure_columns(work, REQUIRED_CLEAN_COLUMNS)
-
-    work.attrs["cleaning_diagnostics"] = {
-        "source_file": source_name or "(unknown)",
-        "input_columns": input_columns,
-        "output_columns": list(work.columns),
-        "created_columns": created_columns,
-        "rows_before": int(len(df)),
-        "rows_after": int(len(work)),
-        "duplicates_removed": int(duplicates_removed),
-    }
-    return work
-
-
-def build_quality_report(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty:
-        return pd.DataFrame()
-    work = df.copy()
-    work["chaine"] = work["chaine"].fillna("(sans chaine)")
-    dedup_subset = [c for c in ["chaine", "date", "heure_diffusion", "titre_propre", "titre_programme"] if c in work]
-    key_missing = (
-        work.groupby("chaine", as_index=False)
-        .agg(
-            nb_lignes=("chaine", "size"),
-            taux_manquant_date=("date", lambda s: float(pd.to_datetime(s, errors="coerce").isna().mean())),
-            taux_manquant_titre=("titre_propre", lambda s: float(s.isna().mean())),
-            taux_manquant_url=("url_notice", lambda s: float(s.isna().mean())),
-            taux_manquant_heure=("heure_diffusion", lambda s: float(s.isna().mean())),
-            part_inflation=("inflation_extended", lambda s: float(pd.to_numeric(s, errors="coerce").fillna(0).eq(1).mean())),
-        )
-        .sort_values("nb_lignes", ascending=False)
-    )
-    if dedup_subset:
-        dup_by_chaine = work.assign(_is_dup=work.duplicated(subset=dedup_subset)).groupby("chaine")["_is_dup"].sum()
-        key_missing["doublons_restants"] = key_missing["chaine"].map(dup_by_chaine).fillna(0).astype(int)
-    else:
-        key_missing["doublons_restants"] = 0
-    key_missing["doublons_supprimes_total"] = int(df.attrs.get("duplicates_removed_total", 0))
-
-    type_share = pd.crosstab(work["chaine"], work["type_contenu"], normalize="index")
-    for col in ["plateau", "edition_complete", "sujet"]:
-        if col in type_share.columns:
-            key_missing[f"part_{col}"] = key_missing["chaine"].map(type_share[col]).fillna(0.0)
-        else:
-            key_missing[f"part_{col}"] = 0.0
-    return key_missing
-
-
-def build_monthly_analysis(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty:
-        return pd.DataFrame(
-            columns=[
-                "chaine",
-                "ym",
-                "nb_total",
-                "nb_inflation",
-                "duree_totale",
-                "duree_inflation",
-                "part_inflation_nb",
-                "part_inflation_duree",
-            ]
-        )
-    work = df.copy()
-    work["chaine"] = work["chaine"].fillna("(sans chaine)")
-    work["ym"] = work["ym"].fillna("inconnu")
-    work["inflation_flag"] = pd.to_numeric(work["inflation_extended"], errors="coerce").fillna(0).eq(1).astype(int)
-    work["duree_sec_num"] = pd.to_numeric(work["duree_sec"], errors="coerce").fillna(0.0)
-    work["duree_inflation"] = work["duree_sec_num"] * work["inflation_flag"]
-
-    grouped = (
-        work.groupby(["chaine", "ym"], as_index=False)
-        .agg(
-            nb_total=("inflation_flag", "size"),
-            nb_inflation=("inflation_flag", "sum"),
-            duree_totale=("duree_sec_num", "sum"),
-            duree_inflation=("duree_inflation", "sum"),
-        )
-        .sort_values(["chaine", "ym"])
-    )
-    grouped["part_inflation_nb"] = np.where(grouped["nb_total"] > 0, grouped["nb_inflation"] / grouped["nb_total"], 0.0)
-    grouped["part_inflation_duree"] = np.where(
-        grouped["duree_totale"] > 0, grouped["duree_inflation"] / grouped["duree_totale"], 0.0
-    )
-    return grouped
+    return text
 
 
 def load_dictionaries(path: str) -> Dict[str, Dict[str, List[str]]]:
@@ -512,112 +182,68 @@ def resolve_active_clean_dir(clean_root: Path) -> Path:
 @st.cache_resource(show_spinner=False)
 def load_clean_parquets_from_folder(
     folder: str, signature: Tuple[Tuple[str, int, int], ...]
-) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, List[str]]:
+) -> Tuple[pd.DataFrame, List[str]]:
     issues: List[str] = []
     if not os.path.isdir(folder):
         LOGGER.warning("Dossier clean introuvable: %s", folder)
         issues.append(f"Dossier clean introuvable: {folder}")
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), issues
+        return pd.DataFrame(), issues
     if not signature:
         LOGGER.warning("Aucun fichier parquet trouve dans %s", folder)
         issues.append(f"Aucun fichier `.parquet` trouve dans {folder}")
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), issues
+        return pd.DataFrame(), issues
 
-    frames: List[pd.DataFrame] = []
-    diagnostics_rows: List[Dict[str, object]] = []
+    frames = []
     for file_name, _, _ in signature:
         path = os.path.join(folder, file_name)
         try:
             df = pd.read_parquet(path)
-            cleaned = clean_file(df, source_name=file_name)
-            cleaned["_date"] = pd.to_datetime(cleaned["_date"], errors="coerce")
-            cleaned = cleaned[cleaned["_date"].notna()].copy()
-            if cleaned.empty:
-                LOGGER.warning("Aucune date valide apres cleaning dans %s", file_name)
-                issues.append(f"Aucune date valide apres cleaning dans {file_name}.")
+            missing = [c for c in REQUIRED_CLEAN_COLUMNS if c not in df.columns]
+            if missing:
+                LOGGER.warning("Colonnes clean manquantes dans %s: %s", file_name, ", ".join(missing))
+                issues.append(f"Colonnes clean manquantes dans {file_name}: {', '.join(missing)}")
+                continue
+            keep_cols = [c for c in REQUIRED_CLEAN_COLUMNS if c in df.columns]
+            normalized = df[keep_cols].copy()
+            normalized["_date"] = pd.to_datetime(normalized["_date"], errors="coerce")
+            normalized = normalized[normalized["_date"].notna()].copy()
+            if normalized.empty:
+                LOGGER.warning("Aucune date valide dans %s", file_name)
+                issues.append(f"Aucune date valide dans {file_name}.")
                 continue
 
-            cleaned["title"] = cleaned["title"].fillna("").astype(str)
-            cleaned["_title_norm"] = cleaned["_title_norm"].fillna("").astype(str)
-            cleaned["_channel"] = cleaned["_channel"].fillna("(sans chaine)").astype(str).str.strip()
+            normalized["title"] = normalized["title"].fillna("").astype(str)
+            normalized["_title_norm"] = normalized["_title_norm"].fillna("").astype(str)
+            normalized["_channel"] = normalized["_channel"].fillna("(sans chaine)").astype(str).str.strip()
 
-            diagnostics = cleaned.attrs.get("cleaning_diagnostics", {})
-            diagnostics_rows.append(
-                {
-                    "source_file": diagnostics.get("source_file", file_name),
-                    "rows_before": diagnostics.get("rows_before", len(df)),
-                    "rows_after": diagnostics.get("rows_after", len(cleaned)),
-                    "duplicates_removed": diagnostics.get("duplicates_removed", 0),
-                    "created_columns": ", ".join(diagnostics.get("created_columns", [])),
-                    "input_columns": ", ".join(diagnostics.get("input_columns", [])),
-                    "output_columns": ", ".join(diagnostics.get("output_columns", [])),
-                }
-            )
-
-            frames.append(cleaned)
-            LOGGER.info("Parquet charge+harmonise: %s | lignes=%s", file_name, len(cleaned))
+            frames.append(normalized)
+            LOGGER.info("Clean parquet charge: %s | lignes=%s", file_name, len(normalized))
         except Exception as exc:
             LOGGER.exception("Lecture impossible sur %s: %s", file_name, exc)
             issues.append(f"Lecture impossible: {file_name} ({exc})")
 
     if not frames:
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), issues
+        return pd.DataFrame(), issues
 
     combined = pd.concat(frames, ignore_index=True, sort=False)
-    global_dedup_subset = [c for c in ["chaine", "date", "heure_diffusion", "titre_propre", "titre_programme"] if c in combined]
-    before_global_dedup = len(combined)
-    if global_dedup_subset:
-        combined = combined.drop_duplicates(subset=global_dedup_subset, keep="first").copy()
-    global_removed = int(before_global_dedup - len(combined))
-
-    diagnostics_df = pd.DataFrame(diagnostics_rows)
-    if diagnostics_df.empty:
-        diagnostics_df = pd.DataFrame(
-            columns=[
-                "source_file",
-                "rows_before",
-                "rows_after",
-                "duplicates_removed",
-                "created_columns",
-                "input_columns",
-                "output_columns",
-            ]
-        )
-    diagnostics_df["duplicates_removed"] = pd.to_numeric(diagnostics_df["duplicates_removed"], errors="coerce").fillna(0).astype(int)
-    diagnostics_df.attrs["global_duplicates_removed"] = global_removed
-    combined.attrs["duplicates_removed_total"] = int(diagnostics_df["duplicates_removed"].sum()) + global_removed
-
-    quality_report_df = build_quality_report(combined)
-    monthly_df = build_monthly_analysis(combined)
-    return combined, monthly_df, quality_report_df, diagnostics_df, issues
+    return combined, issues
 
 
 def prepare_keywords(keywords: List[str]) -> List[str]:
-    normalized = []
-    for keyword in keywords:
-        cleaned = clean_title(keyword)
-        if pd.isna(cleaned):
-            continue
-        normalized.append(str(cleaned))
-    dedup = sorted(set(normalized))
+    normalized = [normalize_text(k) for k in keywords if str(k).strip()]
+    dedup = sorted(set(k for k in normalized if k))
     return dedup
 
 
 def count_occurrences(text_norm: str, keywords_norm: List[str]) -> int:
-    if text_norm is None or pd.isna(text_norm):
-        return 0
-    text = str(text_norm)
-    if not text:
+    if not text_norm:
         return 0
     total = 0
     for keyword in keywords_norm:
-        if keyword is None or pd.isna(keyword):
-            continue
-        kw = str(keyword)
-        if len(kw) <= 4 and kw.isalpha():
-            total += len(re.findall(rf"\b{re.escape(kw)}\b", text))
+        if len(keyword) <= 4 and keyword.isalpha():
+            total += len(re.findall(rf"\b{re.escape(keyword)}\b", text_norm))
         else:
-            total += text.count(kw)
+            total += text_norm.count(keyword)
     return total
 
 
@@ -633,7 +259,7 @@ def add_tagging_columns_hier(
     if title_norm_col and title_norm_col in df.columns:
         titles_norm = df[title_norm_col].fillna("").astype(str)
     else:
-        titles_norm = df[title_col].fillna("").astype(str).map(clean_title).fillna("").astype(str)
+        titles_norm = df[title_col].fillna("").astype(str).map(normalize_text)
 
     df["occ_concept"] = titles_norm.map(lambda x: count_occurrences(x, concept_norm))
     # Contexte conserve pour compatibilite JSON, mais non utilise dans le matching.
@@ -777,9 +403,7 @@ with st.expander("Donnees", expanded=False):
 
 active_clean_dir = resolve_active_clean_dir(CLEAN_ROOT)
 data_signature = parquet_signature(active_clean_dir.as_posix())
-df_base, df_monthly, df_quality, df_clean_diag, load_issues = load_clean_parquets_from_folder(
-    active_clean_dir.as_posix(), data_signature
-)
+df_base, load_issues = load_clean_parquets_from_folder(active_clean_dir.as_posix(), data_signature)
 for issue in load_issues:
     st.warning(issue)
 
@@ -806,9 +430,6 @@ if not title_col or "_date" not in columns:
 st.sidebar.header("Parametres")
 frequency = st.sidebar.selectbox("Frequence", ["Mensuelle", "Trimestrielle", "Annuelle"], index=0)
 with st.sidebar.expander("Diagnostics", expanded=False):
-    show_cleaned = st.checkbox("Afficher les donnees nettoyees", value=False)
-    show_quality = st.checkbox("Afficher le rapport qualite", value=False)
-    show_monthly = st.checkbox("Afficher la base mensuelle", value=False)
     st.caption(f"Log erreurs: `{LOG_PATH.as_posix()}`")
     if st.checkbox("Afficher les 30 dernieres lignes du log", value=False):
         try:
@@ -818,57 +439,6 @@ with st.sidebar.expander("Diagnostics", expanded=False):
         except Exception as exc:
             LOGGER.exception("Lecture du log impossible: %s", exc)
             st.warning(f"Lecture du log impossible ({exc})")
-
-with st.expander("Diagnostic nettoyage", expanded=False):
-    input_union = sorted(
-        {
-            c.strip()
-            for raw in df_clean_diag.get("input_columns", pd.Series(dtype="string")).fillna("")
-            for c in str(raw).split(",")
-            if c.strip()
-        }
-    )
-    created_union = sorted(
-        {
-            c.strip()
-            for raw in df_clean_diag.get("created_columns", pd.Series(dtype="string")).fillna("")
-            for c in str(raw).split(",")
-            if c.strip()
-        }
-    )
-    st.caption(f"Colonnes presentes avant nettoyage (union): {len(input_union)}")
-    st.caption(f"Colonnes finales apres harmonisation: {len(df_base.columns)}")
-    st.caption(f"Colonnes absentes creees automatiquement: {len(created_union)}")
-    if created_union:
-        st.code(", ".join(created_union), language="text")
-    total_removed = int(pd.to_numeric(df_clean_diag.get("duplicates_removed", pd.Series(dtype="int64")), errors="coerce").fillna(0).sum())
-    total_removed += int(df_clean_diag.attrs.get("global_duplicates_removed", 0))
-    st.caption(f"Doublons supprimes (fichiers + global): {total_removed}")
-    if not df_clean_diag.empty:
-        st.dataframe(
-            df_clean_diag[
-                [
-                    "source_file",
-                    "rows_before",
-                    "rows_after",
-                    "duplicates_removed",
-                    "created_columns",
-                ]
-            ],
-            width="stretch",
-        )
-
-if show_cleaned:
-    st.subheader("Apercu base nettoyee")
-    st.dataframe(df_base.head(300), width="stretch")
-
-if show_monthly:
-    st.subheader("Apercu base mensuelle")
-    st.dataframe(df_monthly.head(300), width="stretch")
-
-if show_quality:
-    st.subheader("Rapport qualite")
-    st.dataframe(df_quality, width="stretch")
 
 themes = sorted(dictionaries.keys())
 if not themes:
