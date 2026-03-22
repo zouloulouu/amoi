@@ -10,3 +10,7 @@ data/clean/CURRENT.example
 __pycache__/
 *.pyc
 logs/
+
+# Keep only versioned clean snapshots in Git.
+data/*.parquet
+data/raw/**
