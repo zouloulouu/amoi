@@ -12,7 +12,11 @@ import plotly.express as px
 import streamlit as st
 
 
-st.set_page_config(page_title="INA - Dictionnaire (simple)", layout="wide")
+st.set_page_config(page_title="INA — Analyse thématique", layout="wide")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# CONSTANTES
+# ──────────────────────────────────────────────────────────────────────────────
 
 CLEAN_ROOT = Path("data") / "clean"
 DICTIONARY_PATH = "dictionaries.json"
@@ -37,22 +41,26 @@ DEFAULT_DICTIONARIES: Dict[str, Dict[str, List[str]]] = {
 
 REQUIRED_CLEAN_COLUMNS = ["source_file", "title", "_title_norm", "_date", "_channel"]
 
-DIRECTION_UP = 1
-DIRECTION_DOWN = -1
-DIRECTION_FLAT = 0
+# Sens du signal : 4 états possibles
+DIRECTION_UP = 1        # au moins un terme UP, aucun terme DOWN
+DIRECTION_DOWN = -1     # au moins un terme DOWN, aucun terme UP
+DIRECTION_FLAT = 0      # aucun terme UP ni DOWN (ou titre non matché)
+DIRECTION_AMBIGUOUS = 2 # termes UP et DOWN présents simultanément dans le même titre
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# LOGGER
+# ──────────────────────────────────────────────────────────────────────────────
 
 def setup_logger() -> logging.Logger:
     logger = logging.getLogger("data_ina.app")
     if logger.handlers:
         return logger
-
     try:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         handler = RotatingFileHandler(LOG_PATH, maxBytes=2_000_000, backupCount=3, encoding="utf-8")
     except Exception:
         handler = logging.StreamHandler()
-
     handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
@@ -69,6 +77,10 @@ def stop_with_error_log(user_message: str, context: str, exc: Exception) -> None
     st.stop()
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# HELPERS — DICTIONNAIRES
+# ──────────────────────────────────────────────────────────────────────────────
+
 def empty_theme_dictionary() -> Dict[str, List[str]]:
     return {"concept": [], "context": [], "up": [], "down": []}
 
@@ -81,12 +93,7 @@ def clean_term_list(values) -> List[str]:
 
 def normalize_theme_dictionary(raw_theme) -> Dict[str, List[str]]:
     if isinstance(raw_theme, list):
-        return {
-            "concept": clean_term_list(raw_theme),
-            "context": [],
-            "up": [],
-            "down": [],
-        }
+        return {"concept": clean_term_list(raw_theme), "context": [], "up": [], "down": []}
     if not isinstance(raw_theme, dict):
         return empty_theme_dictionary()
     return {
@@ -111,8 +118,8 @@ def normalize_dictionaries_payload(raw_data) -> Dict[str, Dict[str, List[str]]]:
     return out
 
 
-def clone_dictionaries(dictionaries: Dict[str, Dict[str, List[str]]]) -> Dict[str, Dict[str, List[str]]]:
-    return json.loads(json.dumps(dictionaries, ensure_ascii=False))
+def clone_dictionaries(d: Dict) -> Dict:
+    return json.loads(json.dumps(d, ensure_ascii=False))
 
 
 def normalize_text(value: str) -> str:
@@ -148,6 +155,10 @@ def save_dictionaries(path: str, dictionaries: Dict[str, Dict[str, List[str]]]) 
         json.dump(normalized, f, ensure_ascii=False, indent=2)
     os.replace(tmp_path, path)
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# HELPERS — CHARGEMENT DES DONNÉES
+# ──────────────────────────────────────────────────────────────────────────────
 
 def parquet_signature(folder: str) -> Tuple[Tuple[str, int, int], ...]:
     if not os.path.isdir(folder):
@@ -186,11 +197,11 @@ def load_clean_parquets_from_folder(
     issues: List[str] = []
     if not os.path.isdir(folder):
         LOGGER.warning("Dossier clean introuvable: %s", folder)
-        issues.append(f"Dossier clean introuvable: {folder}")
+        issues.append(f"Dossier clean introuvable : {folder}")
         return pd.DataFrame(), issues
     if not signature:
-        LOGGER.warning("Aucun fichier parquet trouve dans %s", folder)
-        issues.append(f"Aucun fichier `.parquet` trouve dans {folder}")
+        LOGGER.warning("Aucun fichier parquet trouvé dans %s", folder)
+        issues.append(f"Aucun fichier `.parquet` trouvé dans {folder}")
         return pd.DataFrame(), issues
 
     frames = []
@@ -201,7 +212,7 @@ def load_clean_parquets_from_folder(
             missing = [c for c in REQUIRED_CLEAN_COLUMNS if c not in df.columns]
             if missing:
                 LOGGER.warning("Colonnes clean manquantes dans %s: %s", file_name, ", ".join(missing))
-                issues.append(f"Colonnes clean manquantes dans {file_name}: {', '.join(missing)}")
+                issues.append(f"Colonnes manquantes dans {file_name} : {', '.join(missing)}")
                 continue
             keep_cols = [c for c in REQUIRED_CLEAN_COLUMNS if c in df.columns]
             normalized = df[keep_cols].copy()
@@ -211,31 +222,35 @@ def load_clean_parquets_from_folder(
                 LOGGER.warning("Aucune date valide dans %s", file_name)
                 issues.append(f"Aucune date valide dans {file_name}.")
                 continue
-
             normalized["title"] = normalized["title"].fillna("").astype(str)
             normalized["_title_norm"] = normalized["_title_norm"].fillna("").astype(str)
-            normalized["_channel"] = normalized["_channel"].fillna("(sans chaine)").astype(str).str.strip()
-
+            normalized["_channel"] = (
+                normalized["_channel"].fillna("(sans chaîne)").astype(str).str.strip()
+            )
             frames.append(normalized)
-            LOGGER.info("Clean parquet charge: %s | lignes=%s", file_name, len(normalized))
+            LOGGER.info("Chargé : %s | %d lignes", file_name, len(normalized))
         except Exception as exc:
             LOGGER.exception("Lecture impossible sur %s: %s", file_name, exc)
-            issues.append(f"Lecture impossible: {file_name} ({exc})")
+            issues.append(f"Lecture impossible : {file_name} ({exc})")
 
     if not frames:
         return pd.DataFrame(), issues
+    return pd.concat(frames, ignore_index=True, sort=False), issues
 
-    combined = pd.concat(frames, ignore_index=True, sort=False)
-    return combined, issues
 
+# ──────────────────────────────────────────────────────────────────────────────
+# LOGIQUE MÉTIER — MARQUAGE (TAGGING)
+# ──────────────────────────────────────────────────────────────────────────────
 
 def prepare_keywords(keywords: List[str]) -> List[str]:
     normalized = [normalize_text(k) for k in keywords if str(k).strip()]
-    dedup = sorted(set(k for k in normalized if k))
-    return dedup
+    return sorted(set(k for k in normalized if k))
 
 
 def count_occurrences(text_norm: str, keywords_norm: List[str]) -> int:
+    """Compte les occurrences brutes (peut être > 1 par titre).
+    Utiliser is_match (binaire) pour construire un signal de présence/absence.
+    """
     if not text_norm:
         return 0
     total = 0
@@ -256,14 +271,27 @@ def add_tagging_columns_hier(
     down_norm: List[str],
     title_norm_col: Optional[str] = None,
 ) -> pd.DataFrame:
+    """Marque chaque observation avec les colonnes de présence et de sens.
+
+    Logique de matching (binaire) :
+      - is_match = 1 si le titre contient au moins un mot-clé concept, 0 sinon.
+
+    Logique de direction (4 états) :
+      - FLAT (0)      : titre non matché, ou matché sans terme UP/DOWN
+      - UP (1)        : matché + au moins un terme UP, aucun terme DOWN
+      - DOWN (-1)     : matché + au moins un terme DOWN, aucun terme UP
+      - AMBIGUOUS (2) : matché + termes UP ET DOWN présents simultanément
+
+    Le cas AMBIGU est signalé explicitement plutôt que de choisir arbitrairement
+    le signal dominant, ce qui biaiserait l'indicateur.
+    """
     if title_norm_col and title_norm_col in df.columns:
         titles_norm = df[title_norm_col].fillna("").astype(str)
     else:
         titles_norm = df[title_col].fillna("").astype(str).map(normalize_text)
 
     df["occ_concept"] = titles_norm.map(lambda x: count_occurrences(x, concept_norm))
-    # Contexte conserve pour compatibilite JSON, mais non utilise dans le matching.
-    df["occ_context"] = 0
+    df["occ_context"] = 0  # conservé pour compatibilité JSON, non utilisé dans le matching
     df["occ_up"] = titles_norm.map(lambda x: count_occurrences(x, up_norm))
     df["occ_down"] = titles_norm.map(lambda x: count_occurrences(x, down_norm))
 
@@ -273,14 +301,23 @@ def add_tagging_columns_hier(
     df["is_match_strict"] = df["is_match_broad"].astype("int8")
     df["is_match"] = df["is_match_broad"].astype("int8")
 
+    # Direction 4 états — basée sur la présence binaire (pas sur le comptage brut)
+    has_up = df["occ_up"] > 0
+    has_down = df["occ_down"] > 0
+    matched = df["is_match"] == 1
+
     direction = pd.Series(DIRECTION_FLAT, index=df.index, dtype="int8")
-    matched_rows = df["is_match"] == 1
-    direction.loc[matched_rows & (df["occ_up"] > df["occ_down"])] = DIRECTION_UP
-    direction.loc[matched_rows & (df["occ_down"] > df["occ_up"])] = DIRECTION_DOWN
+    direction.loc[matched & has_up & ~has_down] = DIRECTION_UP
+    direction.loc[matched & has_down & ~has_up] = DIRECTION_DOWN
+    direction.loc[matched & has_up & has_down] = DIRECTION_AMBIGUOUS
     df["direction"] = direction
 
     return df
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# LOGIQUE MÉTIER — AGRÉGATION TEMPORELLE
+# ──────────────────────────────────────────────────────────────────────────────
 
 def periodize(series: pd.Series, frequency: str) -> pd.Series:
     if frequency == "Trimestrielle":
@@ -291,12 +328,12 @@ def periodize(series: pd.Series, frequency: str) -> pd.Series:
 
 
 def aggregate_by_period(df: pd.DataFrame, frequency: str) -> pd.DataFrame:
-    match_col = "is_match"
     out = df.assign(period_start=periodize(df["_date"], frequency)).copy()
-    out["_match_mode"] = out[match_col].astype(int)
+    out["_match_mode"] = out["is_match"].astype(int)
     out["occurrences_concept"] = out["occ_concept"] * out["_match_mode"]
     out["up_flag"] = (out["direction"] == DIRECTION_UP).astype(int)
     out["down_flag"] = (out["direction"] == DIRECTION_DOWN).astype(int)
+    out["ambiguous_flag"] = (out["direction"] == DIRECTION_AMBIGUOUS).astype(int)
 
     stats = (
         out.groupby("period_start", as_index=False)
@@ -308,6 +345,7 @@ def aggregate_by_period(df: pd.DataFrame, frequency: str) -> pd.DataFrame:
             occurrences_concept=("occurrences_concept", "sum"),
             up_titles=("up_flag", "sum"),
             down_titles=("down_flag", "sum"),
+            ambiguous_titles=("ambiguous_flag", "sum"),
         )
         .sort_values("period_start")
     )
@@ -328,35 +366,34 @@ def build_descriptive_table(stats: pd.DataFrame, df_tagged: pd.DataFrame) -> pd.
     occ_concept_total = int(df_tagged.loc[df_tagged["is_match"] == 1, "occ_concept"].sum())
     up_titles = int((df_tagged["direction"] == DIRECTION_UP).sum())
     down_titles = int((df_tagged["direction"] == DIRECTION_DOWN).sum())
+    ambiguous_titles = int((df_tagged["direction"] == DIRECTION_AMBIGUOUS).sum())
     net_signal = up_titles - down_titles
 
-    return pd.DataFrame(
-        [
-            {"indicateur": "Titres analyses", "valeur": total_titles},
-            {"indicateur": "Titres matches", "valeur": matched_titles},
-            {"indicateur": "Occurrences concept totales", "valeur": occ_concept_total},
-            {"indicateur": "Up", "valeur": up_titles},
-            {"indicateur": "Down", "valeur": down_titles},
-            {"indicateur": "Signal net", "valeur": net_signal},
-            {"indicateur": "Frequence moyenne", "valeur": float(stats["frequency"].mean())},
-            {"indicateur": "Frequence mediane", "valeur": float(stats["frequency"].median())},
-            {"indicateur": "Frequence max", "valeur": float(stats["frequency"].max())},
-            {"indicateur": "Volume moyen (titres matches)", "valeur": float(stats["matched_titles"].mean())},
-            {"indicateur": "Nb periodes", "valeur": int(len(stats))},
-        ]
-    )
+    return pd.DataFrame([
+        {"indicateur": "Titres analysés", "valeur": total_titles},
+        {"indicateur": "Titres matchés (présence concept, binaire)", "valeur": matched_titles},
+        {"indicateur": "Occurrences brutes concept (intensité)", "valeur": occ_concept_total},
+        {"indicateur": "Signal UP (sens haussier)", "valeur": up_titles},
+        {"indicateur": "Signal DOWN (sens baissier)", "valeur": down_titles},
+        {"indicateur": "Signal AMBIGU (UP + DOWN simultanés)", "valeur": ambiguous_titles},
+        {"indicateur": "Signal net (UP - DOWN)", "valeur": net_signal},
+        {"indicateur": "Fréquence moyenne", "valeur": round(float(stats["frequency"].mean()), 4)},
+        {"indicateur": "Fréquence médiane", "valeur": round(float(stats["frequency"].median()), 4)},
+        {"indicateur": "Fréquence max", "valeur": round(float(stats["frequency"].max()), 4)},
+        {"indicateur": "Volume moyen (titres matchés / période)", "valeur": round(float(stats["matched_titles"].mean()), 1)},
+        {"indicateur": "Nombre de périodes", "valeur": int(len(stats))},
+    ])
 
 
 def build_top_channels(df_tagged: pd.DataFrame) -> pd.DataFrame:
     if "_channel" not in df_tagged.columns:
         return pd.DataFrame()
-
     work = df_tagged.copy()
     work["_match_mode"] = work["is_match"].astype(int)
     work["occurrences_concept"] = work["occ_concept"] * work["_match_mode"]
     work["up_flag"] = (work["direction"] == DIRECTION_UP).astype(int)
     work["down_flag"] = (work["direction"] == DIRECTION_DOWN).astype(int)
-
+    work["ambiguous_flag"] = (work["direction"] == DIRECTION_AMBIGUOUS).astype(int)
     top = (
         work.groupby("_channel", as_index=False)
         .agg(
@@ -366,6 +403,7 @@ def build_top_channels(df_tagged: pd.DataFrame) -> pd.DataFrame:
             occurrences_concept=("occurrences_concept", "sum"),
             up_titles=("up_flag", "sum"),
             down_titles=("down_flag", "sum"),
+            ambiguous_titles=("ambiguous_flag", "sum"),
         )
         .sort_values("matched_titles", ascending=False)
     )
@@ -373,6 +411,62 @@ def build_top_channels(df_tagged: pd.DataFrame) -> pd.DataFrame:
     top["net_signal"] = top["up_titles"] - top["down_titles"]
     return top.head(10)
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# LOGIQUE MÉTIER — STATISTIQUES PAR CHAÎNE
+# ──────────────────────────────────────────────────────────────────────────────
+
+def build_channel_stats(df_base: pd.DataFrame) -> pd.DataFrame:
+    """Statistiques de couverture par chaîne sur le jeu de données complet (non filtré).
+
+    Retourne pour chaque chaîne : date_min, date_max, n_obs, share_pct.
+    """
+    if "_channel" not in df_base.columns or "_date" not in df_base.columns:
+        return pd.DataFrame()
+
+    total = len(df_base)
+    rows = []
+    for channel, grp in df_base.groupby("_channel"):
+        dates = grp["_date"].dropna().sort_values()
+        if dates.empty:
+            continue
+        n = len(grp)
+        rows.append({
+            "_channel": str(channel),
+            "date_min": dates.iloc[0],
+            "date_max": dates.iloc[-1],
+            "n_obs": n,
+            "share_pct": round(n / total * 100, 2),
+        })
+
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows).sort_values("n_obs", ascending=False).reset_index(drop=True)
+
+
+def build_decade_distribution(df_base: pd.DataFrame) -> pd.DataFrame:
+    """Distribution des observations par décennie et par chaîne (format long).
+
+    Retourne : _channel, decade (int), decade_label (str), n, pct (% dans la chaîne).
+    """
+    if "_channel" not in df_base.columns or "_date" not in df_base.columns:
+        return pd.DataFrame()
+    df = df_base[df_base["_date"].notna()].copy()
+    df["decade"] = (df["_date"].dt.year // 10) * 10
+    df["decade_label"] = df["decade"].astype(str) + "–" + (df["decade"] + 9).astype(str)
+    cross = (
+        df.groupby(["_channel", "decade_label", "decade"], as_index=False)
+        .size()
+        .rename(columns={"size": "n"})
+    )
+    channel_totals = cross.groupby("_channel")["n"].transform("sum")
+    cross["pct"] = (cross["n"] / channel_totals * 100).round(1)
+    return cross.sort_values(["_channel", "decade"]).reset_index(drop=True)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# HELPERS — GRAPHIQUES
+# ──────────────────────────────────────────────────────────────────────────────
 
 def apply_time_axis_controls(fig) -> None:
     fig.update_xaxes(
@@ -395,21 +489,44 @@ def apply_time_axis_controls(fig) -> None:
     )
 
 
-st.title("INA - Recherche de dictionnaires (version simplifiee)")
-st.caption("Comptage de mots-cles dans les titres, stats descriptives, top chaines, et series temporelles.")
+# ══════════════════════════════════════════════════════════════════════════════
+# UI — DÉBUT DE L'APPLICATION
+# ══════════════════════════════════════════════════════════════════════════════
 
-with st.expander("Donnees", expanded=False):
-    st.write("Chargement des fichiers `*_clean.parquet` depuis le snapshot actif `data/clean/CURRENT`.")
+st.title("INA — Analyse thématique")
+st.caption(
+    "Détection de concepts dans les titres de journaux télévisés · "
+    "Fréquence, volumes et sens du signal."
+)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# CHARGEMENT DES DONNÉES
+# ──────────────────────────────────────────────────────────────────────────────
 
 active_clean_dir = resolve_active_clean_dir(CLEAN_ROOT)
 data_signature = parquet_signature(active_clean_dir.as_posix())
 df_base, load_issues = load_clean_parquets_from_folder(active_clean_dir.as_posix(), data_signature)
-for issue in load_issues:
-    st.warning(issue)
+
+with st.expander("Données chargées", expanded=False):
+    st.caption(f"Snapshot actif : `{active_clean_dir.as_posix()}`")
+    for issue in load_issues:
+        st.warning(issue)
+    if not df_base.empty:
+        st.success(
+            f"{len(df_base):,} observations chargées depuis {len(data_signature)} fichier(s)."
+        )
+        st.caption(
+            f"Période couverte : {df_base['_date'].min().strftime('%d/%m/%Y')} "
+            f"→ {df_base['_date'].max().strftime('%d/%m/%Y')}"
+        )
 
 if df_base.empty:
-    st.warning(f"Aucune donnee clean chargee dans `{active_clean_dir.as_posix()}`.")
+    st.warning(f"Aucune donnée clean chargée dans `{active_clean_dir.as_posix()}`.")
     st.stop()
+
+# ──────────────────────────────────────────────────────────────────────────────
+# SESSION STATE — DICTIONNAIRES
+# ──────────────────────────────────────────────────────────────────────────────
 
 if "dictionaries" not in st.session_state:
     st.session_state["dictionaries"] = load_dictionaries(DICTIONARY_PATH)
@@ -419,26 +536,106 @@ if not dictionaries:
     dictionaries = clone_dictionaries(DEFAULT_DICTIONARIES)
 st.session_state["dictionaries"] = dictionaries
 
-columns = list(df_base.columns)
-title_col = "title" if "title" in columns else None
-has_source_channel = "_channel" in columns
+title_col = "title" if "title" in df_base.columns else None
+has_source_channel = "_channel" in df_base.columns
 
-if not title_col or "_date" not in columns:
-    st.error("Colonnes minimales introuvables: il faut au moins une colonne titre et une colonne date.")
+if not title_col or "_date" not in df_base.columns:
+    st.error("Colonnes minimales introuvables : il faut au moins `title` et `_date`.")
     st.stop()
 
-st.sidebar.header("Parametres")
-frequency = st.sidebar.selectbox("Frequence", ["Mensuelle", "Trimestrielle", "Annuelle"], index=0)
-with st.sidebar.expander("Diagnostics", expanded=False):
-    st.caption(f"Log erreurs: `{LOG_PATH.as_posix()}`")
-    if st.checkbox("Afficher les 30 dernieres lignes du log", value=False):
-        try:
-            with open(LOG_PATH, "r", encoding="utf-8") as f:
-                last_lines = f.readlines()[-30:]
-            st.code("".join(last_lines) if last_lines else "(log vide)", language="text")
-        except Exception as exc:
-            LOGGER.exception("Lecture du log impossible: %s", exc)
-            st.warning(f"Lecture du log impossible ({exc})")
+# ──────────────────────────────────────────────────────────────────────────────
+# STATISTIQUES DES CHAÎNES (couverture du jeu de données)
+# ──────────────────────────────────────────────────────────────────────────────
+
+with st.expander("Statistiques des chaînes — couverture du jeu de données", expanded=False):
+    ch_stats = build_channel_stats(df_base)
+
+    if ch_stats.empty:
+        st.info("Pas de données de chaînes disponibles.")
+    else:
+        n_channels = len(ch_stats)
+        total_obs = len(df_base)
+        date_global_min = df_base["_date"].min().strftime("%d/%m/%Y")
+        date_global_max = df_base["_date"].max().strftime("%d/%m/%Y")
+
+        st.caption(
+            f"**{n_channels} chaîne(s)** · **{total_obs:,} observations** · "
+            f"Période totale du dataset : {date_global_min} → {date_global_max}"
+        )
+
+        # Tableau de couverture
+        display_ch = ch_stats[["_channel", "date_min", "date_max", "n_obs", "share_pct"]].copy()
+        display_ch["date_min"] = display_ch["date_min"].dt.date
+        display_ch["date_max"] = display_ch["date_max"].dt.date
+        display_ch.columns = ["Chaîne", "Début", "Fin", "Observations", "Part (%)"]
+
+        st.dataframe(
+            display_ch,
+            column_config={
+                "Part (%)": st.column_config.ProgressColumn(
+                    "Part dans l'échantillon",
+                    help="Part des observations de cette chaîne dans le total du dataset",
+                    format="%.1f %%",
+                    min_value=0,
+                    max_value=100,
+                ),
+            },
+            hide_index=True,
+            use_container_width=True,
+        )
+
+        # Distribution par décennie
+        decade_df = build_decade_distribution(df_base)
+        if not decade_df.empty:
+            st.markdown("**Distribution des observations par décennie** (% des obs. de chaque chaîne)")
+            fig_dec = px.bar(
+                decade_df,
+                x="decade_label",
+                y="pct",
+                color="_channel",
+                barmode="group",
+                labels={
+                    "decade_label": "Décennie",
+                    "pct": "Part (%)",
+                    "_channel": "Chaîne",
+                },
+                height=380,
+            )
+            fig_dec.update_layout(
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            )
+            st.plotly_chart(fig_dec, use_container_width=True)
+
+        # Alertes sur cas limites
+        for _, row in ch_stats.iterrows():
+            n = int(row["n_obs"])
+            span_days = (row["date_max"] - row["date_min"]).days
+            channel_name = row["_channel"]
+
+            if n < 50:
+                st.warning(
+                    f"Chaîne « {channel_name} » : série très courte ({n} observations). "
+                    "Les statistiques sont peu fiables."
+                )
+            elif span_days > 0 and not decade_df.empty:
+                # Trous temporels : décennies manquantes entre début et fin
+                ch_decades = decade_df[decade_df["_channel"] == channel_name]
+                start_decade = (row["date_min"].year // 10) * 10
+                end_decade = (row["date_max"].year // 10) * 10
+                expected = set(range(start_decade, end_decade + 1, 10))
+                actual = set(ch_decades["decade"].tolist())
+                missing = expected - actual
+                if missing:
+                    missing_str = ", ".join(f"{d}–{d+9}" for d in sorted(missing))
+                    st.info(
+                        f"Chaîne « {channel_name} » : aucune donnée pour les décennies {missing_str} "
+                        "(trou temporel probable)."
+                    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# GESTION DES THÈMES ET DICTIONNAIRES
+# ──────────────────────────────────────────────────────────────────────────────
 
 themes = sorted(dictionaries.keys())
 if not themes:
@@ -448,95 +645,282 @@ if not themes:
 
 if "theme" not in st.session_state or st.session_state["theme"] not in themes:
     st.session_state["theme"] = themes[0]
-theme = st.sidebar.selectbox(
-    "Theme",
-    options=themes,
-    index=themes.index(st.session_state["theme"]) if st.session_state["theme"] in themes else 0,
-)
-st.session_state["theme"] = theme
 
-with st.expander("Dictionnaires", expanded=False):
+dict_expander_open = st.session_state.pop("dict_expander_open", False)
+
+with st.expander("Thèmes et dictionnaires", expanded=dict_expander_open):
+
+    # Message flash après une action (création, renommage, suppression)
     if st.session_state.get("dict_flash"):
-        st.success(st.session_state["dict_flash"])
-        st.session_state.pop("dict_flash", None)
+        st.success(st.session_state.pop("dict_flash"))
 
-    st.markdown(
-        "1. Saisis uniquement le nom du nouveau theme, puis clique `Ajouter un theme`.\n"
-        "2. Renseigne Concept + Sens (UP/DOWN), puis clique `Enregistrer dictionnaire`."
+    # ── Créer un nouveau thème ──────────────────────────────────────────────
+    st.markdown("### Créer un nouveau thème")
+    st.caption(
+        "Un thème correspond à un sujet d'analyse (ex. : inflation, emploi, logement). "
+        "Donnez-lui un nom court, sans espace si possible."
     )
-
     with st.form("add_theme_form", clear_on_submit=True):
-        new_theme = st.text_input("Nouveau theme", value="")
-        add_theme_submitted = st.form_submit_button("Ajouter un theme")
-    if add_theme_submitted:
-        nt = new_theme.strip()
+        col_a, col_b = st.columns([4, 1])
+        new_theme_input = col_a.text_input(
+            "Nom du nouveau thème",
+            placeholder="ex. : energie, logement, sante...",
+            label_visibility="collapsed",
+        )
+        add_submitted = col_b.form_submit_button("Créer le thème", use_container_width=True)
+
+    if add_submitted:
+        nt = new_theme_input.strip()
         if not nt:
-            st.warning("Nom de theme vide.")
+            st.warning("Le nom du thème ne peut pas être vide.")
         elif nt in dictionaries:
-            st.warning("Ce theme existe deja.")
+            st.warning(f"Le thème « {nt} » existe déjà. Sélectionnez-le dans la barre latérale.")
         else:
             dictionaries[nt] = empty_theme_dictionary()
             st.session_state["dictionaries"] = dictionaries
             st.session_state["theme"] = nt
-            st.session_state["dict_flash"] = f"Theme '{nt}' cree. Ajoute maintenant ses mots-cles."
+            st.session_state["dict_flash"] = (
+                f"Thème « {nt} » créé. Complétez maintenant son dictionnaire ci-dessous, "
+                "puis cliquez sur « Enregistrer »."
+            )
+            st.session_state["dict_expander_open"] = True
             try:
                 save_dictionaries(DICTIONARY_PATH, dictionaries)
             except Exception as exc:
-                LOGGER.exception("Ecriture dictionnaire impossible (creation theme): %s", exc)
-                st.warning(f"Ecriture du fichier dictionnaire impossible ({exc}).")
+                LOGGER.exception("Écriture dictionnaire impossible (création) : %s", exc)
+                st.warning(f"Impossible d'écrire le fichier dictionnaire ({exc}).")
             st.rerun()
 
-    current_theme_dict = normalize_theme_dictionary(dictionaries.get(theme, empty_theme_dictionary()))
+    st.divider()
+
+    # ── Modifier le thème actif ─────────────────────────────────────────────
+    theme_edit = st.session_state["theme"]
+    current_theme_dict = normalize_theme_dictionary(dictionaries.get(theme_edit, empty_theme_dictionary()))
+
+    st.markdown(f"### Modifier le thème : **{theme_edit}**")
+
+    # Étape 1 — Renommer
+    st.markdown("**Étape 1 — Renommer ce thème** *(optionnel)*")
+    with st.form("rename_theme_form", clear_on_submit=False):
+        col_r1, col_r2 = st.columns([4, 1])
+        rename_input = col_r1.text_input(
+            "Nouveau nom",
+            value=theme_edit,
+            label_visibility="collapsed",
+        )
+        rename_submitted = col_r2.form_submit_button("Renommer", use_container_width=True)
+
+    if rename_submitted:
+        new_name = rename_input.strip()
+        if not new_name or new_name == theme_edit:
+            st.info("Nom identique ou vide — aucun changement.")
+        elif new_name in dictionaries:
+            st.warning(f"Un thème « {new_name} » existe déjà.")
+        else:
+            dictionaries[new_name] = dictionaries.pop(theme_edit)
+            st.session_state["dictionaries"] = dictionaries
+            st.session_state["theme"] = new_name
+            st.session_state["dict_flash"] = f"Thème renommé : « {theme_edit} » → « {new_name} »."
+            st.session_state["dict_expander_open"] = True
+            try:
+                save_dictionaries(DICTIONARY_PATH, dictionaries)
+            except Exception as exc:
+                LOGGER.exception("Écriture dictionnaire impossible (renommage) : %s", exc)
+                st.warning(f"Impossible d'écrire le fichier dictionnaire ({exc}).")
+            st.rerun()
+
+    # Étapes 2–4 + Sauvegarde
+    st.markdown("**Étape 2 — Mots-clés du concept**")
+    st.caption(
+        "Un titre sera retenu si il contient **au moins un** de ces mots ou expressions. "
+        "Écrivez **un mot ou une expression par ligne**. "
+        "Les majuscules et les accents sont ignorés automatiquement."
+    )
 
     with st.form("edit_theme_form"):
         concept_text = st.text_area(
-            f"Concept ({theme})",
+            "Mots-clés concept",
             value="\n".join(current_theme_dict["concept"]),
-            height=140,
+            height=150,
+            placeholder="inflation\nhausse des prix\nindice des prix\nipc\n...",
+            label_visibility="collapsed",
+            help="Un mot-clé par ligne. Les doublons et les variations d'accents sont gérés automatiquement.",
+        )
+
+        st.markdown("**Étape 3 — Termes indiquant une hausse (sens UP)**")
+        st.caption(
+            "Si un titre matché contient l'un de ces termes **et aucun terme DOWN**, "
+            "le signal sera orienté à la hausse. "
+            "Si les deux listes sont vides, le sens ne sera pas calculé."
         )
         up_text = st.text_area(
-            f"Sens UP ({theme})",
+            "Termes UP",
             value="\n".join(current_theme_dict["up"]),
             height=120,
+            placeholder="hausse\naugmente\ngrimpe\nexplose\nflambée\n...",
+            label_visibility="collapsed",
+        )
+
+        st.markdown("**Étape 4 — Termes indiquant une baisse (sens DOWN)**")
+        st.caption(
+            "Si un titre matché contient l'un de ces termes **et aucun terme UP**, "
+            "le signal sera orienté à la baisse. "
+            "Si les deux sont présents, le titre est marqué « ambigu » (ni UP ni DOWN)."
         )
         down_text = st.text_area(
-            f"Sens DOWN ({theme})",
+            "Termes DOWN",
             value="\n".join(current_theme_dict["down"]),
             height=120,
+            placeholder="baisse\nrecul\ndiminue\nralentit\nchute\n...",
+            label_visibility="collapsed",
         )
-        save_theme_submitted = st.form_submit_button("Enregistrer dictionnaire")
-    if save_theme_submitted:
-        dictionaries[theme] = {
-            "concept": [k.strip() for k in concept_text.splitlines() if k.strip()],
+
+        st.markdown("**Étape 5 — Enregistrer**")
+        save_submitted = st.form_submit_button(
+            "Enregistrer le dictionnaire", use_container_width=True, type="primary"
+        )
+
+    if save_submitted:
+        new_concept = [k.strip() for k in concept_text.splitlines() if k.strip()]
+        new_up = [k.strip() for k in up_text.splitlines() if k.strip()]
+        new_down = [k.strip() for k in down_text.splitlines() if k.strip()]
+        dictionaries[theme_edit] = {
+            "concept": new_concept,
             "context": current_theme_dict.get("context", []),
-            "up": [k.strip() for k in up_text.splitlines() if k.strip()],
-            "down": [k.strip() for k in down_text.splitlines() if k.strip()],
+            "up": new_up,
+            "down": new_down,
         }
         st.session_state["dictionaries"] = dictionaries
         try:
             save_dictionaries(DICTIONARY_PATH, dictionaries)
-            st.success("Dictionnaire enregistre.")
+            st.success(
+                f"Dictionnaire « {theme_edit} » enregistré : "
+                f"{len(new_concept)} concept(s) · {len(new_up)} terme(s) UP · {len(new_down)} terme(s) DOWN."
+            )
         except Exception as exc:
-            LOGGER.exception("Ecriture dictionnaire impossible (enregistrement): %s", exc)
-            st.warning(f"Ecriture du fichier dictionnaire impossible ({exc}).")
+            LOGGER.exception("Écriture dictionnaire impossible (enregistrement) : %s", exc)
+            st.warning(f"Impossible d'écrire le fichier dictionnaire ({exc}).")
 
-    if st.button("Reset dictionnaires par defaut", width="stretch"):
-        st.session_state["dictionaries"] = clone_dictionaries(DEFAULT_DICTIONARIES)
-        st.session_state["theme"] = sorted(DEFAULT_DICTIONARIES.keys())[0]
+    st.divider()
+
+    # ── Zone de danger ──────────────────────────────────────────────────────
+    st.markdown("### Zone de danger")
+
+    col_danger1, col_danger2 = st.columns(2)
+
+    with col_danger1:
+        st.markdown("**Supprimer ce thème**")
+        remaining_themes = [t for t in themes if t != theme_edit]
+        if not remaining_themes:
+            st.info("Impossible de supprimer le seul thème restant.")
+        else:
+            confirm_key = f"confirm_delete_{theme_edit}"
+            confirmed = st.checkbox(
+                f"Je confirme la suppression définitive de « {theme_edit} »",
+                key=confirm_key,
+                value=False,
+            )
+            if st.button(
+                "Supprimer ce thème",
+                disabled=not confirmed,
+                type="primary" if confirmed else "secondary",
+                key=f"delete_btn_{theme_edit}",
+            ):
+                del dictionaries[theme_edit]
+                st.session_state["dictionaries"] = dictionaries
+                st.session_state["theme"] = sorted(dictionaries.keys())[0]
+                st.session_state["dict_flash"] = f"Thème « {theme_edit} » supprimé."
+                st.session_state["dict_expander_open"] = True
+                try:
+                    save_dictionaries(DICTIONARY_PATH, dictionaries)
+                except Exception as exc:
+                    LOGGER.exception("Écriture dictionnaire impossible (suppression) : %s", exc)
+                    st.warning(f"Impossible d'écrire le fichier dictionnaire ({exc}).")
+                st.rerun()
+
+    with col_danger2:
+        st.markdown("**Réinitialiser tous les dictionnaires**")
+        st.caption(
+            "Recharge les dictionnaires par défaut (inflation, emploi, etc.). "
+            "Toutes vos modifications seront perdues."
+        )
+        if st.button("Réinitialiser par défaut", key="reset_defaults_btn"):
+            st.session_state["dictionaries"] = clone_dictionaries(DEFAULT_DICTIONARIES)
+            st.session_state["theme"] = sorted(DEFAULT_DICTIONARIES.keys())[0]
+            try:
+                save_dictionaries(DICTIONARY_PATH, st.session_state["dictionaries"])
+            except Exception as exc:
+                LOGGER.exception("Écriture dictionnaire impossible (reset) : %s", exc)
+                st.warning(f"Impossible d'écrire le fichier dictionnaire ({exc}).")
+            st.rerun()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# BARRE LATÉRALE — PARAMÈTRES
+# ──────────────────────────────────────────────────────────────────────────────
+
+st.sidebar.header("Paramètres")
+
+# Thème actif (reflète l'état après éventuel rerun du gestionnaire)
+themes = sorted(dictionaries.keys())
+current_theme = st.session_state.get("theme", themes[0] if themes else "")
+theme = st.sidebar.selectbox(
+    "Thème actif",
+    options=themes,
+    index=themes.index(current_theme) if current_theme in themes else 0,
+    help="Le thème dont les concepts sont recherchés dans les titres. "
+         "Créez ou modifiez des thèmes dans la section « Thèmes et dictionnaires » ci-dessus.",
+)
+st.session_state["theme"] = theme
+
+frequency = st.sidebar.selectbox(
+    "Fréquence",
+    ["Mensuelle", "Trimestrielle", "Annuelle"],
+    index=0,
+    help="Période d'agrégation des résultats.",
+)
+
+count_mode = st.sidebar.radio(
+    "Mode de comptage",
+    options=["Binaire (présence / absence)", "Intensité (occurrences brutes)"],
+    index=0,
+    help=(
+        "**Binaire** : chaque titre vaut 1 s'il contient le concept, 0 sinon. "
+        "C'est l'approche recommandée pour construire un signal de saillance médiatique. \n\n"
+        "**Intensité** : somme des occurrences brutes du concept dans les titres. "
+        "Utile pour vérifier la robustesse, mais attention au surcompte."
+    ),
+)
+binary_mode = count_mode.startswith("Binaire")
+
+with st.sidebar.expander("Diagnostics", expanded=False):
+    st.caption(f"Log erreurs : `{LOG_PATH.as_posix()}`")
+    if st.checkbox("Afficher les 30 dernières lignes du log", value=False):
         try:
-            save_dictionaries(DICTIONARY_PATH, st.session_state["dictionaries"])
+            with open(LOG_PATH, "r", encoding="utf-8") as f:
+                last_lines = f.readlines()[-30:]
+            st.code("".join(last_lines) if last_lines else "(log vide)", language="text")
         except Exception as exc:
-            LOGGER.exception("Ecriture dictionnaire impossible (reset): %s", exc)
-            st.warning(f"Ecriture du fichier dictionnaire impossible ({exc}).")
-        st.rerun()
+            LOGGER.exception("Lecture du log impossible : %s", exc)
+            st.warning(f"Lecture du log impossible ({exc})")
 
-theme_dict = normalize_theme_dictionary(st.session_state["dictionaries"].get(theme, empty_theme_dictionary()))
+
+# ──────────────────────────────────────────────────────────────────────────────
+# MARQUAGE (TAGGING)
+# ──────────────────────────────────────────────────────────────────────────────
+
+theme_dict = normalize_theme_dictionary(
+    st.session_state["dictionaries"].get(theme, empty_theme_dictionary())
+)
 concept_norm = prepare_keywords(theme_dict["concept"])
 up_norm = prepare_keywords(theme_dict["up"])
 down_norm = prepare_keywords(theme_dict["down"])
 
 if not concept_norm:
-    st.info("Ajoute au moins un mot-cle dans `Concept` pour le theme selectionne.")
+    st.info(
+        f"Le thème « {theme} » n'a pas encore de mots-clés concept. "
+        "Ouvrez la section **Thèmes et dictionnaires** ci-dessus et complétez l'étape 2."
+    )
     st.stop()
 
 tagging_cache = st.session_state.setdefault("_tagged_theme_cache", {})
@@ -561,46 +945,70 @@ if tag_cache_key not in tagging_cache:
             title_norm_col="_title_norm",
         )
     except Exception as exc:
-        stop_with_error_log("Erreur pendant le tagging des titres.", "add_tagging_columns_hier", exc)
+        stop_with_error_log("Erreur pendant le marquage des titres.", "add_tagging_columns_hier", exc)
     while len(tagging_cache) > 2:
-        oldest_key = next(iter(tagging_cache.keys()))
-        tagging_cache.pop(oldest_key, None)
+        tagging_cache.pop(next(iter(tagging_cache)))
 
 df_tagged = tagging_cache[tag_cache_key]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# FILTRE PÉRIODE
+# ──────────────────────────────────────────────────────────────────────────────
 
 min_date_ts = df_tagged["_date"].min()
 max_date_ts = df_tagged["_date"].max()
 default_start_ts = max_date_ts - pd.DateOffset(years=2)
 if default_start_ts < min_date_ts:
     default_start_ts = min_date_ts
+
 try:
     date_start, date_end = st.sidebar.slider(
-        "Periode",
+        "Période",
         min_value=min_date_ts.to_pydatetime(),
         max_value=max_date_ts.to_pydatetime(),
         value=(default_start_ts.to_pydatetime(), max_date_ts.to_pydatetime()),
     )
 except Exception as exc:
-    stop_with_error_log("Erreur pendant la creation du filtre de periode.", "sidebar.slider Periode", exc)
+    stop_with_error_log("Erreur lors du filtre de période.", "sidebar.slider Periode", exc)
 
-df_period = df_tagged[(df_tagged["_date"] >= pd.Timestamp(date_start)) & (df_tagged["_date"] <= pd.Timestamp(date_end))].copy()
+df_period = df_tagged[
+    (df_tagged["_date"] >= pd.Timestamp(date_start))
+    & (df_tagged["_date"] <= pd.Timestamp(date_end))
+].copy()
+
 if df_period.empty:
-    st.warning("Aucune donnee dans la periode selectionnee.")
+    st.warning("Aucune donnée dans la période sélectionnée.")
     st.stop()
 
-all_channels = sorted(c for c in df_period["_channel"].dropna().unique().tolist() if str(c).strip())
-if not all_channels:
-    all_channels = ["(sans chaine)"]
+# ──────────────────────────────────────────────────────────────────────────────
+# FILTRE CHAÎNES
+# ──────────────────────────────────────────────────────────────────────────────
 
-selected_channels = st.sidebar.multiselect("Filtre chaines", options=all_channels, default=all_channels)
+all_channels = sorted(
+    c for c in df_period["_channel"].dropna().unique().tolist() if str(c).strip()
+)
+if not all_channels:
+    all_channels = ["(sans chaîne)"]
+
+selected_channels = st.sidebar.multiselect(
+    "Filtre chaînes",
+    options=all_channels,
+    default=all_channels,
+)
 if not selected_channels:
-    st.warning("Selectionne au moins une chaine.")
+    st.warning("Sélectionnez au moins une chaîne.")
     st.stop()
 
 df_filtered = df_period[df_period["_channel"].isin(selected_channels)].copy()
 if df_filtered.empty:
-    st.warning("Aucune ligne apres filtre chaine.")
+    st.warning("Aucune ligne après filtre chaîne.")
     st.stop()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# AGRÉGATION
+# ──────────────────────────────────────────────────────────────────────────────
 
 try:
     stats = aggregate_by_period(df_filtered, frequency=frequency)
@@ -609,116 +1017,253 @@ try:
 except Exception as exc:
     stop_with_error_log("Erreur pendant le calcul des indicateurs.", "aggregate/build tables", exc)
 
-match_col = "is_match"
-freq_col = "frequency"
-occ_concept_total = int(df_filtered.loc[df_filtered[match_col] == 1, "occ_concept"].sum())
+
+# ──────────────────────────────────────────────────────────────────────────────
+# KPI — MÉTRIQUES CLÉS
+# ──────────────────────────────────────────────────────────────────────────────
+
+n_total = len(df_filtered)
+n_matched = int(df_filtered["is_match"].sum())
+occ_concept_total = int(df_filtered.loc[df_filtered["is_match"] == 1, "occ_concept"].sum())
+freq_mean = stats["frequency"].mean()
+net_signal_total = int(stats["net_signal"].sum())
 
 k1, k2, k3, k4 = st.columns(4)
-k1.metric("Titres analyses", f"{len(df_filtered):,}")
-k2.metric("Titres matches", f"{int(df_filtered[match_col].sum()):,}")
-k3.metric("Occurrences concept", f"{occ_concept_total:,}")
-k4.metric("Frequence moyenne", f"{stats[freq_col].mean():.3f}")
+k1.metric(
+    "Titres analysés",
+    f"{n_total:,}",
+    help="Nombre total d'observations dans la période et les chaînes sélectionnées.",
+)
+k2.metric(
+    "Titres matchés",
+    f"{n_matched:,}",
+    help="Titres contenant au moins un mot-clé concept (logique binaire : 0 ou 1 par titre).",
+)
+if binary_mode:
+    k3.metric(
+        "Fréquence moyenne",
+        f"{freq_mean:.1%}",
+        help="Part des titres matchés sur l'ensemble des titres analysés, moyennée sur les périodes.",
+    )
+    k4.metric(
+        "Signal net (UP – DOWN)",
+        f"{net_signal_total:+,}",
+        help="Somme des signaux nets par période. Positif = tendance haussière dominante.",
+    )
+else:
+    k3.metric(
+        "Occurrences brutes",
+        f"{occ_concept_total:,}",
+        help="Somme des occurrences du concept dans les titres matchés (peut être > 1 par titre).",
+    )
+    k4.metric(
+        "Fréquence moyenne",
+        f"{freq_mean:.1%}",
+    )
 
-st.subheader("Frequence du theme")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# GRAPHIQUE — FRÉQUENCE
+# ──────────────────────────────────────────────────────────────────────────────
+
+st.subheader(f"Fréquence du thème « {theme} »")
+st.caption(
+    "Part des titres contenant au moins un mot-clé concept (logique binaire : 1 titre = 0 ou 1). "
+    if binary_mode
+    else "Part des titres matchés sur l'ensemble des titres de la période."
+)
+
 fig_freq = px.line(
     stats,
     x="period_start",
-    y=freq_col,
+    y="frequency",
     markers=True,
     render_mode="svg",
-    title=f"Frequence ({frequency.lower()}) - theme '{theme}'",
-    labels={"period_start": "Date", freq_col: "Part de titres matches"},
+    title=f"Fréquence ({frequency.lower()}) — thème « {theme} »",
+    labels={"period_start": "Date", "frequency": "Part de titres matchés"},
 )
 apply_time_axis_controls(fig_freq)
 fig_freq.update_layout(height=420)
-st.plotly_chart(fig_freq, width="stretch")
+st.plotly_chart(fig_freq, use_container_width=True)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# GRAPHIQUE — VOLUMES
+# ──────────────────────────────────────────────────────────────────────────────
 
 st.subheader("Volumes")
+
+if binary_mode:
+    vol_y = ["matched_titles"]
+    vol_title = f"Titres matchés ({frequency.lower()}) — présence binaire"
+    vol_labels = {"period_start": "Date", "value": "Titres matchés", "variable": "Série"}
+else:
+    vol_y = ["matched_titles", "occurrences_concept"]
+    vol_title = f"Volumes ({frequency.lower()}) — titres matchés et occurrences brutes"
+    vol_labels = {"period_start": "Date", "value": "Volume", "variable": "Série"}
+
 fig_vol = px.line(
     stats,
     x="period_start",
-    y=["matched_titles", "occurrences_concept"],
+    y=vol_y,
     markers=True,
     render_mode="svg",
-    title=f"Volumes ({frequency.lower()}) - theme '{theme}'",
-    labels={"period_start": "Date", "value": "Volume", "variable": "Serie"},
+    title=vol_title,
+    labels=vol_labels,
 )
 apply_time_axis_controls(fig_vol)
 fig_vol.update_layout(height=420)
-st.plotly_chart(fig_vol, width="stretch")
+st.plotly_chart(fig_vol, use_container_width=True)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# GRAPHIQUE — SENS DU SIGNAL
+# ──────────────────────────────────────────────────────────────────────────────
 
 st.subheader("Sens du signal")
+
 if not (up_norm or down_norm):
-    st.info("Aucun mot-cle UP/DOWN dans le dictionnaire de ce theme. Ajoute des termes pour activer le signal.")
+    st.info(
+        "Aucun mot-clé UP/DOWN dans le dictionnaire de ce thème. "
+        "Ajoutez des termes dans **Thèmes et dictionnaires** (étapes 3 et 4) pour activer l'analyse de sens."
+    )
 else:
     up_total = int(stats["up_titles"].sum())
     down_total = int(stats["down_titles"].sum())
+    ambiguous_total = int(stats["ambiguous_titles"].sum())
     non_zero_periods = int((stats["net_signal"] != 0).sum())
-    st.caption(
-        f"UP={up_total} | DOWN={down_total} | periodes avec signal net non nul={non_zero_periods}/{len(stats)}"
+
+    col_sig1, col_sig2, col_sig3 = st.columns(3)
+    col_sig1.metric("Titres UP", f"{up_total:,}")
+    col_sig2.metric("Titres DOWN", f"{down_total:,}")
+    col_sig3.metric(
+        "Titres ambigus",
+        f"{ambiguous_total:,}",
+        help="Titres contenant à la fois des termes UP et DOWN. Ils sont exclus du signal net.",
     )
+
+    if ambiguous_total > 0:
+        ambiguous_pct = round(ambiguous_total / max(n_matched, 1) * 100, 1)
+        st.caption(
+            f"**{ambiguous_total} titre(s) ambigu(s)** ({ambiguous_pct} % des matchés) : "
+            "ces titres contiennent simultanément des termes UP et DOWN — ils sont exclus du signal net. "
+            "Si ce nombre est élevé, vérifiez si vos listes UP/DOWN contiennent des termes qui se chevauchent."
+        )
+
     if up_total == 0 and down_total == 0:
         st.warning(
-            "Aucun titre n'a active les termes UP/DOWN sur la periode/filtres courants. "
-            "Essaie d'elargir la periode ou de retirer des filtres chaines."
+            "Aucun titre n'a activé les termes UP/DOWN sur la période et les filtres courants. "
+            "Essayez d'élargir la période ou de retirer des filtres chaînes."
         )
 
     signal_series = st.multiselect(
-        "Series a afficher",
-        options=["net_signal", "up_titles", "down_titles"],
+        "Séries à afficher sur le graphique",
+        options=["net_signal", "up_titles", "down_titles", "ambiguous_titles"],
         default=["net_signal"],
-        help="Selectionne les series pour simplifier la lecture du signal.",
+        help=(
+            "net_signal = UP – DOWN · "
+            "ambiguous_titles = titres avec UP et DOWN simultanés (exclus du signal net)"
+        ),
     )
     if not signal_series:
         signal_series = ["net_signal"]
+
     fig_signal = px.bar(
         stats,
         x="period_start",
         y=signal_series,
         barmode="group",
-        title=f"Sens du signal ({frequency.lower()}) - theme '{theme}'",
+        title=f"Sens du signal ({frequency.lower()}) — thème « {theme} »",
         labels={"period_start": "Date", "value": "Titres", "variable": "Indicateur"},
     )
     apply_time_axis_controls(fig_signal)
     fig_signal.update_layout(height=420)
-    st.plotly_chart(fig_signal, width="stretch")
+    st.plotly_chart(fig_signal, use_container_width=True)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# STATISTIQUES DESCRIPTIVES
+# ──────────────────────────────────────────────────────────────────────────────
 
 st.subheader("Statistiques descriptives")
-st.dataframe(desc, width="stretch")
+st.dataframe(desc, hide_index=True, use_container_width=True)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# TOP CHAÎNES (sur la période, avant filtre chaîne)
+# ──────────────────────────────────────────────────────────────────────────────
 
 if has_source_channel:
-    st.subheader("Top 10 chaines (sur la periode)")
-    st.caption("Calcule sur la periode choisie, avant application du filtre chaine.")
-    st.dataframe(top_channels, width="stretch")
+    st.subheader("Top 10 chaînes — titres matchés sur la période")
+    st.caption(
+        "Calculé sur la période sélectionnée, **avant** application du filtre chaîne, "
+        "pour permettre la comparaison entre chaînes."
+    )
+
     if not top_channels.empty:
+        display_top = top_channels.copy()
+        display_top["frequency_pct"] = (display_top["frequency"] * 100).round(1)
+        st.dataframe(
+            display_top[["_channel", "total_titles", "matched_titles", "frequency_pct",
+                          "up_titles", "down_titles", "ambiguous_titles", "net_signal"]],
+            column_config={
+                "_channel": st.column_config.TextColumn("Chaîne"),
+                "total_titles": st.column_config.NumberColumn("Titres total"),
+                "matched_titles": st.column_config.NumberColumn("Matchés"),
+                "frequency_pct": st.column_config.ProgressColumn(
+                    "Fréquence (%)",
+                    format="%.1f %%",
+                    min_value=0,
+                    max_value=100,
+                ),
+                "up_titles": st.column_config.NumberColumn("UP"),
+                "down_titles": st.column_config.NumberColumn("DOWN"),
+                "ambiguous_titles": st.column_config.NumberColumn("Ambigus"),
+                "net_signal": st.column_config.NumberColumn("Signal net"),
+            },
+            hide_index=True,
+            use_container_width=True,
+        )
+
         fig_top = px.bar(
             top_channels,
             x="_channel",
             y="matched_titles",
-            title="Top chaines par titres matches",
-            labels={"_channel": "Chaine", "matched_titles": "Titres matches"},
+            color="net_signal",
+            color_continuous_scale="RdBu",
+            color_continuous_midpoint=0,
+            title="Top chaînes — titres matchés (couleur = signal net)",
+            labels={"_channel": "Chaîne", "matched_titles": "Titres matchés", "net_signal": "Signal net"},
         )
         fig_top.update_layout(height=400)
-        st.plotly_chart(fig_top, width="stretch")
+        st.plotly_chart(fig_top, use_container_width=True)
 
-st.subheader("Apercu des titres matches")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# APERÇU DES TITRES MATCHÉS
+# ──────────────────────────────────────────────────────────────────────────────
+
+st.subheader("Aperçu des titres matchés")
+
+DIRECTION_LABELS = {
+    DIRECTION_FLAT: "—",
+    DIRECTION_UP: "UP",
+    DIRECTION_DOWN: "DOWN",
+    DIRECTION_AMBIGUOUS: "Ambigu",
+}
+
 preview_cols = [
     c
-    for c in [
-        "_date",
-        "_channel",
-        title_col,
-        "occ_concept",
-        "occ_up",
-        "occ_down",
-        "direction",
-        "source_file",
-    ]
+    for c in ["_date", "_channel", title_col, "occ_concept", "occ_up", "occ_down", "direction", "source_file"]
     if c in df_filtered.columns
 ]
-st.dataframe(
-    df_filtered[df_filtered[match_col] == 1]
+preview_df = (
+    df_filtered[df_filtered["is_match"] == 1]
     .sort_values(["occ_concept", "_date"], ascending=[False, False])
-    .head(300)[preview_cols],
-    width="stretch",
+    .head(300)[preview_cols]
+    .copy()
 )
+if "direction" in preview_df.columns:
+    preview_df["direction"] = preview_df["direction"].map(DIRECTION_LABELS).fillna("—")
+
+st.dataframe(preview_df, hide_index=True, use_container_width=True)
