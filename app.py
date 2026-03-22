@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+import time
 import unicodedata
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -420,28 +421,22 @@ def build_channel_stats(df_base: pd.DataFrame) -> pd.DataFrame:
     """Statistiques de couverture par chaîne sur le jeu de données complet (non filtré).
 
     Retourne pour chaque chaîne : date_min, date_max, n_obs, share_pct.
+    Vectorisé via groupby pour éviter la boucle Python sur les groupes.
     """
     if "_channel" not in df_base.columns or "_date" not in df_base.columns:
         return pd.DataFrame()
 
     total = len(df_base)
-    rows = []
-    for channel, grp in df_base.groupby("_channel"):
-        dates = grp["_date"].dropna().sort_values()
-        if dates.empty:
-            continue
-        n = len(grp)
-        rows.append({
-            "_channel": str(channel),
-            "date_min": dates.iloc[0],
-            "date_max": dates.iloc[-1],
-            "n_obs": n,
-            "share_pct": round(n / total * 100, 2),
-        })
-
-    if not rows:
+    valid = df_base[df_base["_date"].notna()]
+    if valid.empty:
         return pd.DataFrame()
-    return pd.DataFrame(rows).sort_values("n_obs", ascending=False).reset_index(drop=True)
+
+    stats = (
+        valid.groupby("_channel", as_index=False)
+        .agg(date_min=("_date", "min"), date_max=("_date", "max"), n_obs=("_date", "count"))
+    )
+    stats["share_pct"] = (stats["n_obs"] / total * 100).round(2)
+    return stats.sort_values("n_obs", ascending=False).reset_index(drop=True)
 
 
 def build_decade_distribution(df_base: pd.DataFrame) -> pd.DataFrame:
@@ -529,12 +524,16 @@ if df_base.empty:
 # ──────────────────────────────────────────────────────────────────────────────
 
 if "dictionaries" not in st.session_state:
+    # Chargement initial : normalisation complète depuis le fichier JSON
     st.session_state["dictionaries"] = load_dictionaries(DICTIONARY_PATH)
 
-dictionaries = normalize_dictionaries_payload(st.session_state["dictionaries"])
-if not dictionaries:
+# Les dicts sont normalisés au chargement (load_dictionaries) et à chaque
+# sauvegarde (save_dictionaries). On fait confiance au session_state directement
+# pour éviter de renormaliser tous les termes à chaque rerun.
+dictionaries = st.session_state["dictionaries"]
+if not isinstance(dictionaries, dict) or not dictionaries:
     dictionaries = clone_dictionaries(DEFAULT_DICTIONARIES)
-st.session_state["dictionaries"] = dictionaries
+    st.session_state["dictionaries"] = dictionaries
 
 title_col = "title" if "title" in df_base.columns else None
 has_source_channel = "_channel" in df_base.columns
@@ -545,11 +544,22 @@ if not title_col or "_date" not in df_base.columns:
 
 # ──────────────────────────────────────────────────────────────────────────────
 # STATISTIQUES DES CHAÎNES (couverture du jeu de données)
+# Calculées UNE SEULE FOIS par session (quand data_signature change),
+# jamais répétées lors des reruns normaux (slider, filtres, etc.)
 # ──────────────────────────────────────────────────────────────────────────────
 
-with st.expander("Statistiques des chaînes — couverture du jeu de données", expanded=False):
-    ch_stats = build_channel_stats(df_base)
+# Cache invalidé uniquement si les fichiers parquet changent
+if st.session_state.get("_ch_stats_sig") != data_signature:
+    _t0 = time.perf_counter()
+    _ch_stats = build_channel_stats(df_base)
+    _decade_df = build_decade_distribution(df_base)
+    st.session_state["_ch_stats_cache"] = (_ch_stats, _decade_df)
+    st.session_state["_ch_stats_sig"] = data_signature
+    LOGGER.info("Stats chaînes recalculées en %.0f ms", (time.perf_counter() - _t0) * 1000)
 
+ch_stats, decade_df = st.session_state["_ch_stats_cache"]
+
+with st.expander("Statistiques des chaînes — couverture du jeu de données", expanded=False):
     if ch_stats.empty:
         st.info("Pas de données de chaînes disponibles.")
     else:
@@ -585,7 +595,6 @@ with st.expander("Statistiques des chaînes — couverture du jeu de données", 
         )
 
         # Distribution par décennie
-        decade_df = build_decade_distribution(df_base)
         if not decade_df.empty:
             st.markdown("**Distribution des observations par décennie** (% des obs. de chaque chaîne)")
             fig_dec = px.bar(
@@ -618,7 +627,6 @@ with st.expander("Statistiques des chaînes — couverture du jeu de données", 
                     "Les statistiques sont peu fiables."
                 )
             elif span_days > 0 and not decade_df.empty:
-                # Trous temporels : décennies manquantes entre début et fin
                 ch_decades = decade_df[decade_df["_channel"] == channel_name]
                 start_decade = (row["date_min"].year // 10) * 10
                 end_decade = (row["date_max"].year // 10) * 10
@@ -895,6 +903,20 @@ binary_mode = count_mode.startswith("Binaire")
 
 with st.sidebar.expander("Diagnostics", expanded=False):
     st.caption(f"Log erreurs : `{LOG_PATH.as_posix()}`")
+
+    # Affichage de l'état des caches session pour vérifier les gains de perf
+    if st.checkbox("Afficher l'état des caches", value=False):
+        tagging_cache_info = st.session_state.get("_tagged_theme_cache", {})
+        agg_cache_info = st.session_state.get("_agg_cache", {})
+        ch_stats_cached = "_ch_stats_cache" in st.session_state
+        kw_cached = "_kw_cache_key" in st.session_state
+        st.caption(
+            f"Cache tagging : {len(tagging_cache_info)} entrée(s)  \n"
+            f"Cache agrégation : {len(agg_cache_info)} entrée(s)  \n"
+            f"Cache stats chaînes : {'oui' if ch_stats_cached else 'non'}  \n"
+            f"Cache keywords : {'oui' if kw_cached else 'non'}"
+        )
+
     if st.checkbox("Afficher les 30 dernières lignes du log", value=False):
         try:
             with open(LOG_PATH, "r", encoding="utf-8") as f:
@@ -912,9 +934,19 @@ with st.sidebar.expander("Diagnostics", expanded=False):
 theme_dict = normalize_theme_dictionary(
     st.session_state["dictionaries"].get(theme, empty_theme_dictionary())
 )
-concept_norm = prepare_keywords(theme_dict["concept"])
-up_norm = prepare_keywords(theme_dict["up"])
-down_norm = prepare_keywords(theme_dict["down"])
+
+# Cache les keywords normalisés dans session_state pour éviter de relancer
+# unicodedata.normalize sur chaque terme à chaque rerun.
+# Clé = contenu brut du dictionnaire du thème actif.
+_kw_cache_key = (theme, tuple(theme_dict["concept"]), tuple(theme_dict["up"]), tuple(theme_dict["down"]))
+if st.session_state.get("_kw_cache_key") != _kw_cache_key:
+    st.session_state["_kw_cache_key"] = _kw_cache_key
+    st.session_state["_kw_cache"] = (
+        prepare_keywords(theme_dict["concept"]),
+        prepare_keywords(theme_dict["up"]),
+        prepare_keywords(theme_dict["down"]),
+    )
+concept_norm, up_norm, down_norm = st.session_state["_kw_cache"]
 
 if not concept_norm:
     st.info(
@@ -972,12 +1004,12 @@ try:
 except Exception as exc:
     stop_with_error_log("Erreur lors du filtre de période.", "sidebar.slider Periode", exc)
 
-df_period = df_tagged[
+# Masque de période (appliqué sur df_tagged directement, sans copy intermédiaire)
+_period_mask = (
     (df_tagged["_date"] >= pd.Timestamp(date_start))
     & (df_tagged["_date"] <= pd.Timestamp(date_end))
-].copy()
-
-if df_period.empty:
+)
+if not _period_mask.any():
     st.warning("Aucune donnée dans la période sélectionnée.")
     st.stop()
 
@@ -986,7 +1018,8 @@ if df_period.empty:
 # ──────────────────────────────────────────────────────────────────────────────
 
 all_channels = sorted(
-    c for c in df_period["_channel"].dropna().unique().tolist() if str(c).strip()
+    c for c in df_tagged.loc[_period_mask, "_channel"].dropna().unique().tolist()
+    if str(c).strip()
 )
 if not all_channels:
     all_channels = ["(sans chaîne)"]
@@ -1000,7 +1033,12 @@ if not selected_channels:
     st.warning("Sélectionnez au moins une chaîne.")
     st.stop()
 
-df_filtered = df_period[df_period["_channel"].isin(selected_channels)].copy()
+# df_period : période seule, avant filtre chaîne (utilisé pour top_channels)
+# df_filtered : période + filtre chaîne (utilisé pour tout le reste)
+# On copie une seule fois chacun, depuis df_tagged directement.
+df_period = df_tagged[_period_mask].copy()
+df_filtered = df_tagged[_period_mask & df_tagged["_channel"].isin(selected_channels)].copy()
+
 if df_filtered.empty:
     st.warning("Aucune ligne après filtre chaîne.")
     st.stop()
@@ -1008,14 +1046,40 @@ if df_filtered.empty:
 
 # ──────────────────────────────────────────────────────────────────────────────
 # AGRÉGATION
+# Cache dans session_state : évite de relancer les groupby (coûteux) quand
+# seule la vue change (ex. bascule Binaire/Intensité, qui est un pur toggle
+# d'affichage et ne modifie ni les filtres ni les données sous-jacentes).
+# Clé = (tag_cache_key, date_start, date_end, chaînes sélectionnées, fréquence)
 # ──────────────────────────────────────────────────────────────────────────────
 
-try:
-    stats = aggregate_by_period(df_filtered, frequency=frequency)
-    desc = build_descriptive_table(stats, df_filtered)
-    top_channels = build_top_channels(df_period)
-except Exception as exc:
-    stop_with_error_log("Erreur pendant le calcul des indicateurs.", "aggregate/build tables", exc)
+agg_cache_key = json.dumps({
+    "tag": tag_cache_key,
+    "date_start": str(date_start),
+    "date_end": str(date_end),
+    "channels": sorted(selected_channels),
+    "frequency": frequency,
+}, sort_keys=True)
+
+agg_cache = st.session_state.setdefault("_agg_cache", {})
+
+if agg_cache_key not in agg_cache:
+    try:
+        _t0 = time.perf_counter()
+        stats = aggregate_by_period(df_filtered, frequency=frequency)
+        desc = build_descriptive_table(stats, df_filtered)
+        top_channels = build_top_channels(df_period)
+        agg_cache[agg_cache_key] = (stats, desc, top_channels)
+        LOGGER.info(
+            "Agrégation recalculée en %.0f ms (freq=%s, n=%d)",
+            (time.perf_counter() - _t0) * 1000, frequency, len(df_filtered),
+        )
+        # Limite la taille du cache (5 entrées max)
+        while len(agg_cache) > 5:
+            agg_cache.pop(next(iter(agg_cache)))
+    except Exception as exc:
+        stop_with_error_log("Erreur pendant le calcul des indicateurs.", "aggregate/build tables", exc)
+
+stats, desc, top_channels = agg_cache[agg_cache_key]
 
 
 # ──────────────────────────────────────────────────────────────────────────────
