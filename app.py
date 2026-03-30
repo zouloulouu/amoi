@@ -27,9 +27,11 @@ LOG_PATH = LOG_DIR / "streamlit_app.log"
 HF_REPO_ID = "zouloulouu/data_ina_clean"
 HF_PARQUET_FILES = (
     "ina_inflation_stats_bfmtv_general_clean.parquet",
+    "ina_inflation_stats_europe1_information_clean.parquet",
     "ina_inflation_stats_fr2_clean.parquet",
     "ina_inflation_stats_france3_jtelevise_clean.parquet",
     "ina_inflation_stats_france_inter_information_clean.parquet",
+    "ina_inflation_stats_rtl_journal_parle_clean.parquet",
     "ina_merged_dedup_finalTF1_clean.parquet",
 )
 
