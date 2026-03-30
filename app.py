@@ -24,6 +24,15 @@ DICTIONARY_PATH = "dictionaries.json"
 LOG_DIR = Path("logs")
 LOG_PATH = LOG_DIR / "streamlit_app.log"
 
+HF_REPO_ID = "zouloulouu/data_ina_clean"
+HF_PARQUET_FILES = (
+    "ina_inflation_stats_bfmtv_general_clean.parquet",
+    "ina_inflation_stats_fr2_clean.parquet",
+    "ina_inflation_stats_france3_jtelevise_clean.parquet",
+    "ina_inflation_stats_france_inter_information_clean.parquet",
+    "ina_merged_dedup_finalTF1_clean.parquet",
+)
+
 DEFAULT_DICTIONARIES: Dict[str, Dict[str, List[str]]] = {
     "inflation": {
         "concept": [
@@ -233,6 +242,52 @@ def load_clean_parquets_from_folder(
         except Exception as exc:
             LOGGER.exception("Lecture impossible sur %s: %s", file_name, exc)
             issues.append(f"Lecture impossible : {file_name} ({exc})")
+
+    if not frames:
+        return pd.DataFrame(), issues
+    return pd.concat(frames, ignore_index=True, sort=False), issues
+
+
+@st.cache_resource(show_spinner=False)
+def load_clean_parquets_from_hf() -> Tuple[pd.DataFrame, List[str]]:
+    from huggingface_hub import hf_hub_download
+
+    hf_token = st.secrets.get("HF_TOKEN", None)
+    issues: List[str] = []
+    frames = []
+
+    for file_name in HF_PARQUET_FILES:
+        try:
+            local_path = hf_hub_download(
+                repo_id=HF_REPO_ID,
+                filename=file_name,
+                repo_type="dataset",
+                token=hf_token,
+            )
+            df = pd.read_parquet(local_path)
+            missing = [c for c in REQUIRED_CLEAN_COLUMNS if c not in df.columns]
+            if missing:
+                LOGGER.warning("Colonnes clean manquantes dans %s: %s", file_name, ", ".join(missing))
+                issues.append(f"Colonnes manquantes dans {file_name} : {', '.join(missing)}")
+                continue
+            keep_cols = [c for c in REQUIRED_CLEAN_COLUMNS if c in df.columns]
+            normalized = df[keep_cols].copy()
+            normalized["_date"] = pd.to_datetime(normalized["_date"], errors="coerce")
+            normalized = normalized[normalized["_date"].notna()].copy()
+            if normalized.empty:
+                LOGGER.warning("Aucune date valide dans %s", file_name)
+                issues.append(f"Aucune date valide dans {file_name}.")
+                continue
+            normalized["title"] = normalized["title"].fillna("").astype(str)
+            normalized["_title_norm"] = normalized["_title_norm"].fillna("").astype(str)
+            normalized["_channel"] = (
+                normalized["_channel"].fillna("(sans chaîne)").astype(str).str.strip()
+            )
+            frames.append(normalized)
+            LOGGER.info("Chargé HF : %s | %d lignes", file_name, len(normalized))
+        except Exception as exc:
+            LOGGER.exception("Lecture HF impossible sur %s: %s", file_name, exc)
+            issues.append(f"Lecture impossible depuis HuggingFace : {file_name} ({exc})")
 
     if not frames:
         return pd.DataFrame(), issues
@@ -498,12 +553,11 @@ st.caption(
 # CHARGEMENT DES DONNÉES
 # ──────────────────────────────────────────────────────────────────────────────
 
-active_clean_dir = resolve_active_clean_dir(CLEAN_ROOT)
-data_signature = parquet_signature(active_clean_dir.as_posix())
-df_base, load_issues = load_clean_parquets_from_folder(active_clean_dir.as_posix(), data_signature)
+data_signature = HF_PARQUET_FILES
+df_base, load_issues = load_clean_parquets_from_hf()
 
 with st.expander("Données chargées", expanded=False):
-    st.caption(f"Snapshot actif : `{active_clean_dir.as_posix()}`")
+    st.caption(f"Source : `{HF_REPO_ID}` (HuggingFace Datasets)")
     for issue in load_issues:
         st.warning(issue)
     if not df_base.empty:
@@ -516,7 +570,7 @@ with st.expander("Données chargées", expanded=False):
         )
 
 if df_base.empty:
-    st.warning(f"Aucune donnée clean chargée dans `{active_clean_dir.as_posix()}`.")
+    st.warning(f"Aucune donnée chargée depuis `{HF_REPO_ID}`.")
     st.stop()
 
 # ──────────────────────────────────────────────────────────────────────────────
