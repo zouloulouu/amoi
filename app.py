@@ -168,6 +168,40 @@ def save_dictionaries(path: str, dictionaries: Dict[str, Dict[str, List[str]]]) 
     os.replace(tmp_path, path)
 
 
+def load_dictionaries_from_hf(token: Optional[str]) -> Dict[str, Dict[str, List[str]]]:
+    import requests as _req
+    url = f"https://huggingface.co/datasets/{HF_REPO_ID}/resolve/main/dictionaries.json"
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    try:
+        r = _req.get(url, headers=headers, timeout=10)
+        if r.status_code == 200:
+            return normalize_dictionaries_payload(r.json())
+    except Exception as exc:
+        LOGGER.warning("Chargement dictionnaires HF impossible: %s", exc)
+    return {}
+
+
+def save_dictionaries_to_hf(dictionaries: Dict[str, Dict[str, List[str]]], token: Optional[str]) -> None:
+    if not token:
+        return
+    import io as _io
+    from huggingface_hub import HfApi
+    normalized = normalize_dictionaries_payload(dictionaries)
+    content = json.dumps(normalized, ensure_ascii=False, indent=2).encode("utf-8")
+    try:
+        HfApi().upload_file(
+            path_or_fileobj=_io.BytesIO(content),
+            path_in_repo="dictionaries.json",
+            repo_id=HF_REPO_ID,
+            repo_type="dataset",
+            token=token,
+            commit_message="Update dictionaries",
+        )
+    except Exception as exc:
+        LOGGER.warning("Sauvegarde dictionnaires HF impossible: %s", exc)
+        raise
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # HELPERS — CHARGEMENT DES DONNÉES
 # ──────────────────────────────────────────────────────────────────────────────
@@ -584,8 +618,11 @@ if df_base.empty:
 # ──────────────────────────────────────────────────────────────────────────────
 
 if "dictionaries" not in st.session_state:
-    # Chargement initial : normalisation complète depuis le fichier JSON
-    st.session_state["dictionaries"] = load_dictionaries(DICTIONARY_PATH)
+    _hf_write_token = st.secrets.get("HF_WRITE_TOKEN", None)
+    _hf_read_token = st.secrets.get("HF_TOKEN", None)
+    _hf_dicts = load_dictionaries_from_hf(_hf_write_token or _hf_read_token)
+    st.session_state["dictionaries"] = _hf_dicts if _hf_dicts else load_dictionaries(DICTIONARY_PATH)
+    st.session_state["_hf_write_token"] = _hf_write_token
 
 # Les dicts sont normalisés au chargement (load_dictionaries) et à chaque
 # sauvegarde (save_dictionaries). On fait confiance au session_state directement
@@ -651,18 +688,23 @@ with st.expander("Statistiques des chaînes — couverture du jeu de données", 
                 ),
             },
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
         )
 
         # Distribution par décennie
         if not decade_df.empty:
             st.markdown("**Distribution des observations par décennie** (% des obs. de chaque chaîne)")
+            _sorted_decades = sorted(
+                decade_df["decade_label"].unique(),
+                key=lambda x: int(x.split("–")[0]),
+            )
             fig_dec = px.bar(
                 decade_df,
                 x="decade_label",
                 y="pct",
                 color="_channel",
                 barmode="group",
+                category_orders={"decade_label": _sorted_decades},
                 labels={
                     "decade_label": "Décennie",
                     "pct": "Part (%)",
@@ -673,7 +715,7 @@ with st.expander("Statistiques des chaînes — couverture du jeu de données", 
             fig_dec.update_layout(
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             )
-            st.plotly_chart(fig_dec, use_container_width=True)
+            st.plotly_chart(fig_dec, width="stretch")
 
         # Alertes sur cas limites
         for _, row in ch_stats.iterrows():
@@ -754,6 +796,7 @@ with st.expander("Thèmes et dictionnaires", expanded=dict_expander_open):
             st.session_state["dict_expander_open"] = True
             try:
                 save_dictionaries(DICTIONARY_PATH, dictionaries)
+                save_dictionaries_to_hf(dictionaries, st.session_state.get("_hf_write_token"))
             except Exception as exc:
                 LOGGER.exception("Écriture dictionnaire impossible (création) : %s", exc)
                 st.warning(f"Impossible d'écrire le fichier dictionnaire ({exc}).")
@@ -792,6 +835,7 @@ with st.expander("Thèmes et dictionnaires", expanded=dict_expander_open):
             st.session_state["dict_expander_open"] = True
             try:
                 save_dictionaries(DICTIONARY_PATH, dictionaries)
+                save_dictionaries_to_hf(dictionaries, st.session_state.get("_hf_write_token"))
             except Exception as exc:
                 LOGGER.exception("Écriture dictionnaire impossible (renommage) : %s", exc)
                 st.warning(f"Impossible d'écrire le fichier dictionnaire ({exc}).")
@@ -861,6 +905,7 @@ with st.expander("Thèmes et dictionnaires", expanded=dict_expander_open):
         st.session_state["dictionaries"] = dictionaries
         try:
             save_dictionaries(DICTIONARY_PATH, dictionaries)
+            save_dictionaries_to_hf(dictionaries, st.session_state.get("_hf_write_token"))
             st.success(
                 f"Dictionnaire « {theme_edit} » enregistré : "
                 f"{len(new_concept)} concept(s) · {len(new_up)} terme(s) UP · {len(new_down)} terme(s) DOWN."
@@ -901,6 +946,7 @@ with st.expander("Thèmes et dictionnaires", expanded=dict_expander_open):
                 st.session_state["dict_expander_open"] = True
                 try:
                     save_dictionaries(DICTIONARY_PATH, dictionaries)
+                    save_dictionaries_to_hf(dictionaries, st.session_state.get("_hf_write_token"))
                 except Exception as exc:
                     LOGGER.exception("Écriture dictionnaire impossible (suppression) : %s", exc)
                     st.warning(f"Impossible d'écrire le fichier dictionnaire ({exc}).")
@@ -917,6 +963,7 @@ with st.expander("Thèmes et dictionnaires", expanded=dict_expander_open):
             st.session_state["theme"] = sorted(DEFAULT_DICTIONARIES.keys())[0]
             try:
                 save_dictionaries(DICTIONARY_PATH, st.session_state["dictionaries"])
+                save_dictionaries_to_hf(st.session_state["dictionaries"], st.session_state.get("_hf_write_token"))
             except Exception as exc:
                 LOGGER.exception("Écriture dictionnaire impossible (reset) : %s", exc)
                 st.warning(f"Impossible d'écrire le fichier dictionnaire ({exc}).")
@@ -1055,14 +1102,28 @@ if default_start_ts < min_date_ts:
     default_start_ts = min_date_ts
 
 try:
-    date_start, date_end = st.sidebar.slider(
-        "Période",
-        min_value=min_date_ts.to_pydatetime(),
-        max_value=max_date_ts.to_pydatetime(),
-        value=(default_start_ts.to_pydatetime(), max_date_ts.to_pydatetime()),
+    _dcol1, _dcol2 = st.sidebar.columns(2)
+    date_start = _dcol1.date_input(
+        "Du",
+        value=default_start_ts.date(),
+        min_value=min_date_ts.date(),
+        max_value=max_date_ts.date(),
+        format="DD/MM/YYYY",
     )
+    date_end = _dcol2.date_input(
+        "Au",
+        value=max_date_ts.date(),
+        min_value=min_date_ts.date(),
+        max_value=max_date_ts.date(),
+        format="DD/MM/YYYY",
+    )
+    date_start = pd.Timestamp(date_start)
+    date_end = pd.Timestamp(date_end)
+    if date_start > date_end:
+        st.sidebar.error("La date de début doit être avant la date de fin.")
+        st.stop()
 except Exception as exc:
-    stop_with_error_log("Erreur lors du filtre de période.", "sidebar.slider Periode", exc)
+    stop_with_error_log("Erreur lors du filtre de période.", "date_input Periode", exc)
 
 # Masque de période (appliqué sur df_tagged directement, sans copy intermédiaire)
 _period_mask = (
@@ -1084,11 +1145,21 @@ all_channels = sorted(
 if not all_channels:
     all_channels = ["(sans chaîne)"]
 
+_cc1, _cc2 = st.sidebar.columns(2)
+if _cc1.button("Tout", key="ch_all"):
+    st.session_state["_ch_sel"] = all_channels
+if _cc2.button("Aucune", key="ch_none"):
+    st.session_state["_ch_sel"] = []
+if "_ch_sel" not in st.session_state or not all(c in all_channels for c in st.session_state.get("_ch_sel", [])):
+    st.session_state["_ch_sel"] = all_channels
+
 selected_channels = st.sidebar.multiselect(
     "Filtre chaînes",
     options=all_channels,
-    default=all_channels,
+    default=st.session_state["_ch_sel"],
+    key="ch_multiselect",
 )
+st.session_state["_ch_sel"] = selected_channels
 if not selected_channels:
     st.warning("Sélectionnez au moins une chaîne.")
     st.stop()
@@ -1208,7 +1279,7 @@ fig_freq = px.line(
 )
 apply_time_axis_controls(fig_freq)
 fig_freq.update_layout(height=420)
-st.plotly_chart(fig_freq, use_container_width=True)
+st.plotly_chart(fig_freq, width="stretch")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1237,7 +1308,7 @@ fig_vol = px.line(
 )
 apply_time_axis_controls(fig_vol)
 fig_vol.update_layout(height=420)
-st.plotly_chart(fig_vol, use_container_width=True)
+st.plotly_chart(fig_vol, width="stretch")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1302,7 +1373,7 @@ else:
     )
     apply_time_axis_controls(fig_signal)
     fig_signal.update_layout(height=420)
-    st.plotly_chart(fig_signal, use_container_width=True)
+    st.plotly_chart(fig_signal, width="stretch")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1310,7 +1381,7 @@ else:
 # ──────────────────────────────────────────────────────────────────────────────
 
 st.subheader("Statistiques descriptives")
-st.dataframe(desc, hide_index=True, use_container_width=True)
+st.dataframe(desc, hide_index=True, width="stretch")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1346,7 +1417,7 @@ if has_source_channel:
                 "net_signal": st.column_config.NumberColumn("Signal net"),
             },
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
         )
 
         fig_top = px.bar(
@@ -1360,7 +1431,7 @@ if has_source_channel:
             labels={"_channel": "Chaîne", "matched_titles": "Titres matchés", "net_signal": "Signal net"},
         )
         fig_top.update_layout(height=400)
-        st.plotly_chart(fig_top, use_container_width=True)
+        st.plotly_chart(fig_top, width="stretch")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1390,4 +1461,4 @@ preview_df = (
 if "direction" in preview_df.columns:
     preview_df["direction"] = preview_df["direction"].map(DIRECTION_LABELS).fillna("—")
 
-st.dataframe(preview_df, hide_index=True, use_container_width=True)
+st.dataframe(preview_df, hide_index=True, width="stretch")
