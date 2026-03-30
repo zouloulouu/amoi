@@ -555,7 +555,6 @@ st.caption(
 # CHARGEMENT DES DONNÉES
 # ──────────────────────────────────────────────────────────────────────────────
 
-st.info("Connexion à HuggingFace en cours...")
 data_signature = HF_PARQUET_FILES
 try:
     df_base, load_issues = load_clean_parquets_from_hf()
