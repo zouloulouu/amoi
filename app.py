@@ -555,8 +555,13 @@ st.caption(
 # CHARGEMENT DES DONNÉES
 # ──────────────────────────────────────────────────────────────────────────────
 
+st.info("Connexion à HuggingFace en cours...")
 data_signature = HF_PARQUET_FILES
-df_base, load_issues = load_clean_parquets_from_hf()
+try:
+    df_base, load_issues = load_clean_parquets_from_hf()
+except Exception as _hf_exc:
+    st.error(f"Erreur chargement HuggingFace : {_hf_exc}")
+    st.stop()
 
 with st.expander("Données chargées", expanded=False):
     st.caption(f"Source : `{HF_REPO_ID}` (HuggingFace Datasets)")
