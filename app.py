@@ -250,23 +250,23 @@ def load_clean_parquets_from_folder(
     return pd.concat(frames, ignore_index=True, sort=False), issues
 
 
-@st.cache_resource(show_spinner=False)
+@st.cache_resource(show_spinner="Chargement des données (première ouverture, ~2 min)...")
 def load_clean_parquets_from_hf() -> Tuple[pd.DataFrame, List[str]]:
-    from huggingface_hub import hf_hub_download
+    import io
+    import requests
 
     hf_token = st.secrets.get("HF_TOKEN", None)
+    headers = {"Authorization": f"Bearer {hf_token}"} if hf_token else {}
+    base_url = f"https://huggingface.co/datasets/{HF_REPO_ID}/resolve/main"
     issues: List[str] = []
     frames = []
 
     for file_name in HF_PARQUET_FILES:
         try:
-            local_path = hf_hub_download(
-                repo_id=HF_REPO_ID,
-                filename=file_name,
-                repo_type="dataset",
-                token=hf_token,
-            )
-            df = pd.read_parquet(local_path)
+            url = f"{base_url}/{file_name}"
+            response = requests.get(url, headers=headers, timeout=300)
+            response.raise_for_status()
+            df = pd.read_parquet(io.BytesIO(response.content))
             missing = [c for c in REQUIRED_CLEAN_COLUMNS if c not in df.columns]
             if missing:
                 LOGGER.warning("Colonnes clean manquantes dans %s: %s", file_name, ", ".join(missing))
