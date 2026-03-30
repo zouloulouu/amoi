@@ -618,11 +618,10 @@ if df_base.empty:
 # ──────────────────────────────────────────────────────────────────────────────
 
 if "dictionaries" not in st.session_state:
-    _hf_write_token = st.secrets.get("HF_WRITE_TOKEN", None)
-    _hf_read_token = st.secrets.get("HF_TOKEN", None)
-    _hf_dicts = load_dictionaries_from_hf(_hf_write_token or _hf_read_token)
+    _hf_token = st.secrets.get("HF_TOKEN", None)
+    _hf_dicts = load_dictionaries_from_hf(_hf_token)
     st.session_state["dictionaries"] = _hf_dicts if _hf_dicts else load_dictionaries(DICTIONARY_PATH)
-    st.session_state["_hf_write_token"] = _hf_write_token
+    st.session_state["_hf_write_token"] = _hf_token
 
 # Les dicts sont normalisés au chargement (load_dictionaries) et à chaque
 # sauvegarde (save_dictionaries). On fait confiance au session_state directement
