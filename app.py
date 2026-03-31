@@ -206,83 +206,6 @@ def save_dictionaries_to_hf(dictionaries: Dict[str, Dict[str, List[str]]], token
 # HELPERS — CHARGEMENT DES DONNÉES
 # ──────────────────────────────────────────────────────────────────────────────
 
-def parquet_signature(folder: str) -> Tuple[Tuple[str, int, int], ...]:
-    if not os.path.isdir(folder):
-        return tuple()
-    signature: List[Tuple[str, int, int]] = []
-    for name in sorted(os.listdir(folder)):
-        if not str(name).lower().endswith(".parquet"):
-            continue
-        path = os.path.join(folder, name)
-        try:
-            stat = os.stat(path)
-            signature.append((name, int(stat.st_size), int(stat.st_mtime_ns)))
-        except OSError as exc:
-            LOGGER.warning("Stat impossible sur %s: %s", path, exc)
-    return tuple(signature)
-
-
-def resolve_active_clean_dir(clean_root: Path) -> Path:
-    current_path = clean_root / "CURRENT"
-    if current_path.exists():
-        version = current_path.read_text(encoding="utf-8").strip()
-        if version:
-            target = clean_root / version
-            if target.is_dir():
-                return target
-    candidates = sorted([p for p in clean_root.glob("v*_utc") if p.is_dir()])
-    if candidates:
-        return candidates[-1]
-    return clean_root
-
-
-@st.cache_resource(show_spinner=False)
-def load_clean_parquets_from_folder(
-    folder: str, signature: Tuple[Tuple[str, int, int], ...]
-) -> Tuple[pd.DataFrame, List[str]]:
-    issues: List[str] = []
-    if not os.path.isdir(folder):
-        LOGGER.warning("Dossier clean introuvable: %s", folder)
-        issues.append(f"Dossier clean introuvable : {folder}")
-        return pd.DataFrame(), issues
-    if not signature:
-        LOGGER.warning("Aucun fichier parquet trouvé dans %s", folder)
-        issues.append(f"Aucun fichier `.parquet` trouvé dans {folder}")
-        return pd.DataFrame(), issues
-
-    frames = []
-    for file_name, _, _ in signature:
-        path = os.path.join(folder, file_name)
-        try:
-            df = pd.read_parquet(path)
-            missing = [c for c in REQUIRED_CLEAN_COLUMNS if c not in df.columns]
-            if missing:
-                LOGGER.warning("Colonnes clean manquantes dans %s: %s", file_name, ", ".join(missing))
-                issues.append(f"Colonnes manquantes dans {file_name} : {', '.join(missing)}")
-                continue
-            keep_cols = [c for c in REQUIRED_CLEAN_COLUMNS if c in df.columns]
-            normalized = df[keep_cols].copy()
-            normalized["_date"] = pd.to_datetime(normalized["_date"], errors="coerce")
-            normalized = normalized[normalized["_date"].notna()].copy()
-            if normalized.empty:
-                LOGGER.warning("Aucune date valide dans %s", file_name)
-                issues.append(f"Aucune date valide dans {file_name}.")
-                continue
-            normalized["title"] = normalized["title"].fillna("").astype(str)
-            normalized["_title_norm"] = normalized["_title_norm"].fillna("").astype(str)
-            normalized["_channel"] = (
-                normalized["_channel"].fillna("(sans chaîne)").astype(str).str.strip()
-            )
-            frames.append(normalized)
-            LOGGER.info("Chargé : %s | %d lignes", file_name, len(normalized))
-        except Exception as exc:
-            LOGGER.exception("Lecture impossible sur %s: %s", file_name, exc)
-            issues.append(f"Lecture impossible : {file_name} ({exc})")
-
-    if not frames:
-        return pd.DataFrame(), issues
-    return pd.concat(frames, ignore_index=True, sort=False), issues
-
 
 @st.cache_resource(show_spinner="Chargement des données (première ouverture, ~2 min)...")
 def load_clean_parquets_from_hf() -> Tuple[pd.DataFrame, List[str]]:
@@ -1149,19 +1072,23 @@ if _cc1.button("Tout", key="ch_all"):
     st.session_state["_ch_sel"] = all_channels
 if _cc2.button("Aucune", key="ch_none"):
     st.session_state["_ch_sel"] = []
-if "_ch_sel" not in st.session_state or not all(c in all_channels for c in st.session_state.get("_ch_sel", [])):
-    st.session_state["_ch_sel"] = all_channels
+
+# Réinitialise si la sélection contient des chaînes absentes de la période courante
+_current_sel = st.session_state.get("_ch_sel", all_channels)
+_valid_sel = [c for c in _current_sel if c in all_channels]
+if not _valid_sel:
+    _valid_sel = all_channels
+st.session_state["_ch_sel"] = _valid_sel
 
 selected_channels = st.sidebar.multiselect(
     "Filtre chaînes",
     options=all_channels,
-    default=st.session_state["_ch_sel"],
-    key="ch_multiselect",
+    default=_valid_sel,
 )
-st.session_state["_ch_sel"] = selected_channels
 if not selected_channels:
     st.warning("Sélectionnez au moins une chaîne.")
     st.stop()
+st.session_state["_ch_sel"] = selected_channels
 
 # df_period : période seule, avant filtre chaîne (utilisé pour top_channels)
 # df_filtered : période + filtre chaîne (utilisé pour tout le reste)
