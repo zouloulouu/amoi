@@ -666,7 +666,9 @@ with st.expander("Statistiques des chaînes — couverture du jeu de données", 
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# GESTION DES THÈMES ET DICTIONNAIRES
+# BARRE LATÉRALE — PARAMÈTRES
+# Rendu AVANT l'expander thèmes pour que `theme` soit défini
+# avant que le bloc "Modifier le thème" le lise.
 # ──────────────────────────────────────────────────────────────────────────────
 
 themes = sorted(dictionaries.keys())
@@ -677,6 +679,66 @@ if not themes:
 
 if "theme" not in st.session_state or st.session_state["theme"] not in themes:
     st.session_state["theme"] = themes[0]
+
+st.sidebar.header("Paramètres")
+
+current_theme = st.session_state.get("theme", themes[0] if themes else "")
+theme = st.sidebar.selectbox(
+    "Thème actif",
+    options=themes,
+    index=themes.index(current_theme) if current_theme in themes else 0,
+    help="Le thème dont les concepts sont recherchés dans les titres. "
+         "Créez ou modifiez des thèmes dans la section « Thèmes et dictionnaires » ci-dessus.",
+)
+st.session_state["theme"] = theme
+
+frequency = st.sidebar.selectbox(
+    "Fréquence",
+    ["Mensuelle", "Trimestrielle", "Annuelle"],
+    index=0,
+    help="Période d'agrégation des résultats.",
+)
+
+count_mode = st.sidebar.radio(
+    "Mode de comptage",
+    options=["Binaire (présence / absence)", "Intensité (occurrences brutes)"],
+    index=0,
+    help=(
+        "**Binaire** : chaque titre vaut 1 s'il contient le concept, 0 sinon. "
+        "C'est l'approche recommandée pour construire un signal de saillance médiatique. \n\n"
+        "**Intensité** : somme des occurrences brutes du concept dans les titres. "
+        "Utile pour vérifier la robustesse, mais attention au surcompte."
+    ),
+)
+binary_mode = count_mode.startswith("Binaire")
+
+with st.sidebar.expander("Diagnostics", expanded=False):
+    st.caption(f"Log erreurs : `{LOG_PATH.as_posix()}`")
+
+    if st.checkbox("Afficher l'état des caches", value=False):
+        tagging_cache_info = st.session_state.get("_tagged_theme_cache", {})
+        agg_cache_info = st.session_state.get("_agg_cache", {})
+        ch_stats_cached = "_ch_stats_cache" in st.session_state
+        kw_cached = "_kw_cache_key" in st.session_state
+        st.caption(
+            f"Cache tagging : {len(tagging_cache_info)} entrée(s)  \n"
+            f"Cache agrégation : {len(agg_cache_info)} entrée(s)  \n"
+            f"Cache stats chaînes : {'oui' if ch_stats_cached else 'non'}  \n"
+            f"Cache keywords : {'oui' if kw_cached else 'non'}"
+        )
+
+    if st.checkbox("Afficher les 30 dernières lignes du log", value=False):
+        try:
+            with open(LOG_PATH, "r", encoding="utf-8") as f:
+                last_lines = f.readlines()[-30:]
+            st.code("".join(last_lines) if last_lines else "(log vide)", language="text")
+        except Exception as exc:
+            LOGGER.exception("Lecture du log impossible : %s", exc)
+            st.warning(f"Lecture du log impossible ({exc})")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# GESTION DES THÈMES ET DICTIONNAIRES
+# ──────────────────────────────────────────────────────────────────────────────
 
 dict_expander_open = st.session_state.pop("dict_expander_open", False)
 
@@ -727,7 +789,7 @@ with st.expander("Thèmes et dictionnaires", expanded=dict_expander_open):
     st.divider()
 
     # ── Modifier le thème actif ─────────────────────────────────────────────
-    theme_edit = st.session_state["theme"]
+    theme_edit = theme  # toujours synchronisé avec le selectbox sidebar
     current_theme_dict = normalize_theme_dictionary(dictionaries.get(theme_edit, empty_theme_dictionary()))
 
     st.markdown(f"### Modifier le thème : **{theme_edit}**")
@@ -890,70 +952,6 @@ with st.expander("Thèmes et dictionnaires", expanded=dict_expander_open):
                 LOGGER.exception("Écriture dictionnaire impossible (reset) : %s", exc)
                 st.warning(f"Impossible d'écrire le fichier dictionnaire ({exc}).")
             st.rerun()
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# BARRE LATÉRALE — PARAMÈTRES
-# ──────────────────────────────────────────────────────────────────────────────
-
-st.sidebar.header("Paramètres")
-
-# Thème actif (reflète l'état après éventuel rerun du gestionnaire)
-themes = sorted(dictionaries.keys())
-current_theme = st.session_state.get("theme", themes[0] if themes else "")
-theme = st.sidebar.selectbox(
-    "Thème actif",
-    options=themes,
-    index=themes.index(current_theme) if current_theme in themes else 0,
-    help="Le thème dont les concepts sont recherchés dans les titres. "
-         "Créez ou modifiez des thèmes dans la section « Thèmes et dictionnaires » ci-dessus.",
-)
-st.session_state["theme"] = theme
-
-frequency = st.sidebar.selectbox(
-    "Fréquence",
-    ["Mensuelle", "Trimestrielle", "Annuelle"],
-    index=0,
-    help="Période d'agrégation des résultats.",
-)
-
-count_mode = st.sidebar.radio(
-    "Mode de comptage",
-    options=["Binaire (présence / absence)", "Intensité (occurrences brutes)"],
-    index=0,
-    help=(
-        "**Binaire** : chaque titre vaut 1 s'il contient le concept, 0 sinon. "
-        "C'est l'approche recommandée pour construire un signal de saillance médiatique. \n\n"
-        "**Intensité** : somme des occurrences brutes du concept dans les titres. "
-        "Utile pour vérifier la robustesse, mais attention au surcompte."
-    ),
-)
-binary_mode = count_mode.startswith("Binaire")
-
-with st.sidebar.expander("Diagnostics", expanded=False):
-    st.caption(f"Log erreurs : `{LOG_PATH.as_posix()}`")
-
-    # Affichage de l'état des caches session pour vérifier les gains de perf
-    if st.checkbox("Afficher l'état des caches", value=False):
-        tagging_cache_info = st.session_state.get("_tagged_theme_cache", {})
-        agg_cache_info = st.session_state.get("_agg_cache", {})
-        ch_stats_cached = "_ch_stats_cache" in st.session_state
-        kw_cached = "_kw_cache_key" in st.session_state
-        st.caption(
-            f"Cache tagging : {len(tagging_cache_info)} entrée(s)  \n"
-            f"Cache agrégation : {len(agg_cache_info)} entrée(s)  \n"
-            f"Cache stats chaînes : {'oui' if ch_stats_cached else 'non'}  \n"
-            f"Cache keywords : {'oui' if kw_cached else 'non'}"
-        )
-
-    if st.checkbox("Afficher les 30 dernières lignes du log", value=False):
-        try:
-            with open(LOG_PATH, "r", encoding="utf-8") as f:
-                last_lines = f.readlines()[-30:]
-            st.code("".join(last_lines) if last_lines else "(log vide)", language="text")
-        except Exception as exc:
-            LOGGER.exception("Lecture du log impossible : %s", exc)
-            st.warning(f"Lecture du log impossible ({exc})")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
