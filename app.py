@@ -1024,23 +1024,26 @@ if default_start_ts < min_date_ts:
     default_start_ts = min_date_ts
 
 try:
-    _dcol1, _dcol2 = st.sidebar.columns(2)
-    date_start = _dcol1.date_input(
-        "Du",
-        value=default_start_ts.date(),
+    if st.sidebar.button("Plage complète", key="date_full_range"):
+        st.session_state["_date_range"] = (min_date_ts.date(), max_date_ts.date())
+
+    _default_range = st.session_state.get(
+        "_date_range",
+        (default_start_ts.date(), max_date_ts.date()),
+    )
+    date_range = st.sidebar.date_input(
+        "Période",
+        value=_default_range,
         min_value=min_date_ts.date(),
         max_value=max_date_ts.date(),
         format="DD/MM/YYYY",
     )
-    date_end = _dcol2.date_input(
-        "Au",
-        value=max_date_ts.date(),
-        min_value=min_date_ts.date(),
-        max_value=max_date_ts.date(),
-        format="DD/MM/YYYY",
-    )
-    date_start = pd.Timestamp(date_start)
-    date_end = pd.Timestamp(date_end)
+    if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
+        date_start = pd.Timestamp(date_range[0])
+        date_end = pd.Timestamp(date_range[1])
+        st.session_state["_date_range"] = (date_range[0], date_range[1])
+    else:
+        date_start = date_end = pd.Timestamp(date_range[0]) if date_range else pd.Timestamp(min_date_ts)
     if date_start > date_end:
         st.sidebar.error("La date de début doit être avant la date de fin.")
         st.stop()
@@ -1067,8 +1070,9 @@ all_channels = sorted(
 if not all_channels:
     all_channels = ["(sans chaîne)"]
 
+st.sidebar.markdown("---")
 _cc1, _cc2 = st.sidebar.columns(2)
-if _cc1.button("Tout", key="ch_all"):
+if _cc1.button("Toutes", key="ch_all"):
     st.session_state["_ch_sel"] = all_channels
 if _cc2.button("Aucune", key="ch_none"):
     st.session_state["_ch_sel"] = []
@@ -1092,9 +1096,8 @@ st.session_state["_ch_sel"] = selected_channels
 
 # df_period : période seule, avant filtre chaîne (utilisé pour top_channels)
 # df_filtered : période + filtre chaîne (utilisé pour tout le reste)
-# On copie une seule fois chacun, depuis df_tagged directement.
-df_period = df_tagged[_period_mask].copy()
-df_filtered = df_tagged[_period_mask & df_tagged["_channel"].isin(selected_channels)].copy()
+df_period = df_tagged[_period_mask]
+df_filtered = df_tagged[_period_mask & df_tagged["_channel"].isin(selected_channels)]
 
 if df_filtered.empty:
     st.warning("Aucune ligne après filtre chaîne.")
@@ -1387,4 +1390,17 @@ preview_df = (
 if "direction" in preview_df.columns:
     preview_df["direction"] = preview_df["direction"].map(DIRECTION_LABELS).fillna("—")
 
-st.dataframe(preview_df, hide_index=True, width="stretch")
+st.dataframe(
+    preview_df,
+    hide_index=True,
+    width="stretch",
+    column_config={
+        "_date": st.column_config.DateColumn("Date", format="YYYY-MM-DD"),
+        "_channel": st.column_config.TextColumn("Chaîne"),
+        "title": st.column_config.TextColumn("Titre"),
+        "occ_concept": st.column_config.NumberColumn("Concept"),
+        "occ_up": st.column_config.NumberColumn("UP"),
+        "occ_down": st.column_config.NumberColumn("DOWN"),
+        "source_file": st.column_config.TextColumn("Source"),
+    },
+)
