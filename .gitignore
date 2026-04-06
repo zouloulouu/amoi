@@ -10,7 +10,6 @@ data/clean/CURRENT.example
 __pycache__/
 *.pyc
 logs/
-scripts/
 reports/
 
 # Keep only versioned clean snapshots in Git.
