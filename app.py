@@ -1025,25 +1025,30 @@ if default_start_ts < min_date_ts:
 
 try:
     if st.sidebar.button("Plage complète", key="date_full_range"):
-        st.session_state["_date_range"] = (min_date_ts.date(), max_date_ts.date())
+        st.session_state["_date_start"] = min_date_ts.date()
+        st.session_state["_date_end"] = max_date_ts.date()
 
-    _default_range = st.session_state.get(
-        "_date_range",
-        (default_start_ts.date(), max_date_ts.date()),
-    )
-    date_range = st.sidebar.date_input(
-        "Période",
-        value=_default_range,
+    _dcol1, _dcol2 = st.sidebar.columns(2)
+    date_start = _dcol1.date_input(
+        "Du",
+        value=st.session_state.get("_date_start", default_start_ts.date()),
         min_value=min_date_ts.date(),
         max_value=max_date_ts.date(),
         format="DD/MM/YYYY",
+        key="date_input_start",
     )
-    if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
-        date_start = pd.Timestamp(date_range[0])
-        date_end = pd.Timestamp(date_range[1])
-        st.session_state["_date_range"] = (date_range[0], date_range[1])
-    else:
-        date_start = date_end = pd.Timestamp(date_range[0]) if date_range else pd.Timestamp(min_date_ts)
+    date_end = _dcol2.date_input(
+        "Au",
+        value=st.session_state.get("_date_end", max_date_ts.date()),
+        min_value=min_date_ts.date(),
+        max_value=max_date_ts.date(),
+        format="DD/MM/YYYY",
+        key="date_input_end",
+    )
+    st.session_state["_date_start"] = date_start
+    st.session_state["_date_end"] = date_end
+    date_start = pd.Timestamp(date_start)
+    date_end = pd.Timestamp(date_end)
     if date_start > date_end:
         st.sidebar.error("La date de début doit être avant la date de fin.")
         st.stop()
