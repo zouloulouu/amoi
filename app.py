@@ -1023,13 +1023,13 @@ if default_start_ts < min_date_ts:
 
 try:
     if st.sidebar.button("Plage complète", key="date_full_range"):
-        st.session_state["_date_start"] = min_date_ts.date()
-        st.session_state["_date_end"] = max_date_ts.date()
+        st.session_state["date_input_start"] = min_date_ts.date()
+        st.session_state["date_input_end"] = max_date_ts.date()
 
     _dcol1, _dcol2 = st.sidebar.columns(2)
     date_start = _dcol1.date_input(
         "Du",
-        value=st.session_state.get("_date_start", default_start_ts.date()),
+        value=default_start_ts.date(),
         min_value=min_date_ts.date(),
         max_value=max_date_ts.date(),
         format="DD/MM/YYYY",
@@ -1037,14 +1037,12 @@ try:
     )
     date_end = _dcol2.date_input(
         "Au",
-        value=st.session_state.get("_date_end", max_date_ts.date()),
+        value=max_date_ts.date(),
         min_value=min_date_ts.date(),
         max_value=max_date_ts.date(),
         format="DD/MM/YYYY",
         key="date_input_end",
     )
-    st.session_state["_date_start"] = date_start
-    st.session_state["_date_end"] = date_end
     date_start = pd.Timestamp(date_start)
     date_end = pd.Timestamp(date_end)
     if date_start > date_end:
