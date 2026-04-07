@@ -1405,3 +1405,55 @@ st.dataframe(
         "source_file": st.column_config.TextColumn("Source"),
     },
 )
+
+# ──────────────────────────────────────────────────────────────────────────────
+# EXPORT
+# ──────────────────────────────────────────────────────────────────────────────
+
+st.divider()
+st.subheader("Exporter les données")
+
+
+def format_period_date(ts: pd.Timestamp, freq: str) -> str:
+    if freq == "Trimestrielle":
+        return f"{ts.year}-Q{ts.quarter}"
+    if freq == "Annuelle":
+        return str(ts.year)
+    return ts.strftime("%Y-%m")
+
+
+def build_export_df(stats: pd.DataFrame, freq: str) -> pd.DataFrame:
+    export = stats[["period_start", "total_titles", "matched_titles",
+                     "frequency", "up_titles", "down_titles", "net_signal"]].copy()
+    export["date"] = export["period_start"].apply(lambda t: format_period_date(t, freq))
+    export = export.rename(columns={
+        "total_titles": "total_titres",
+        "matched_titles": "volume",
+        "frequency": "frequence",
+        "up_titles": "signal_up",
+        "down_titles": "signal_down",
+        "net_signal": "signal_net",
+    })
+    export["frequence"] = export["frequence"].round(4)
+    return export[["date", "total_titres", "volume", "frequence",
+                    "signal_up", "signal_down", "signal_net"]]
+
+
+_export_df = build_export_df(stats, frequency)
+_fname = (
+    f"{theme}_{frequency.lower()}"
+    f"_{date_start.strftime('%Y%m%d')}"
+    f"_{date_end.strftime('%Y%m%d')}.csv"
+)
+
+st.caption(
+    f"{len(_export_df)} période(s) · thème **{theme}** · "
+    f"{frequency.lower()} · "
+    f"{date_start.strftime('%d/%m/%Y')} → {date_end.strftime('%d/%m/%Y')}"
+)
+st.download_button(
+    label="Télécharger le CSV",
+    data=_export_df.to_csv(index=False, sep=";", decimal=",").encode("utf-8"),
+    file_name=_fname,
+    mime="text/csv",
+)
