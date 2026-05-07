@@ -1,9 +1,7 @@
 import json
 import logging
 import os
-import re
 import time
-import unicodedata
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -12,6 +10,31 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+from ina_core import (
+    DIRECTION_AMBIGUOUS,
+    DIRECTION_DOWN,
+    DIRECTION_FLAT,
+    DIRECTION_UP,
+    aggregate_by_period,
+    build_channel_stats,
+    build_decade_distribution,
+    build_descriptive_table,
+    build_top_channels,
+    clone_dictionaries,
+    empty_theme_dictionary,
+    normalize_theme_dictionary,
+    prepare_keywords,
+    tag_dataframe,
+)
+from ina_core.store import (
+    DEFAULT_HF_PARQUET_FILES,
+    CompositeDictRepository,
+    DataStore,
+    HuggingFaceRepository,
+    LocalJsonRepository,
+    Settings,
+)
+
 
 st.set_page_config(page_title="INA — Analyse thématique", layout="wide")
 
@@ -19,21 +42,8 @@ st.set_page_config(page_title="INA — Analyse thématique", layout="wide")
 # CONSTANTES
 # ──────────────────────────────────────────────────────────────────────────────
 
-CLEAN_ROOT = Path("data") / "clean"
-DICTIONARY_PATH = "dictionaries.json"
 LOG_DIR = Path("logs")
 LOG_PATH = LOG_DIR / "streamlit_app.log"
-
-HF_REPO_ID = "zouloulouu/data_ina_clean"
-HF_PARQUET_FILES = (
-    "ina_inflation_stats_bfmtv_general_clean.parquet",
-    "ina_inflation_stats_europe1_information_clean.parquet",
-    "ina_inflation_stats_fr2_clean.parquet",
-    "ina_inflation_stats_france3_jtelevise_clean.parquet",
-    "ina_inflation_stats_france_inter_information_clean.parquet",
-    "ina_inflation_stats_rtl_journal_parle_clean.parquet",
-    "ina_merged_dedup_finalTF1_clean.parquet",
-)
 
 DEFAULT_DICTIONARIES: Dict[str, Dict[str, List[str]]] = {
     "inflation": {
@@ -50,14 +60,6 @@ DEFAULT_DICTIONARIES: Dict[str, Dict[str, List[str]]] = {
         "down": [],
     }
 }
-
-REQUIRED_CLEAN_COLUMNS = ["source_file", "title", "_title_norm", "_date", "_channel"]
-
-# Sens du signal : 4 états possibles
-DIRECTION_UP = 1        # au moins un terme UP, aucun terme DOWN
-DIRECTION_DOWN = -1     # au moins un terme DOWN, aucun terme UP
-DIRECTION_FLAT = 0      # aucun terme UP ni DOWN (ou titre non matché)
-DIRECTION_AMBIGUOUS = 2 # termes UP et DOWN présents simultanément dans le même titre
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -83,6 +85,17 @@ def setup_logger() -> logging.Logger:
 LOGGER = setup_logger()
 
 
+def get_hf_token() -> Optional[str]:
+    token = os.environ.get("HF_TOKEN")
+    if token:
+        return token
+    try:
+        return st.secrets.get("HF_TOKEN", None)
+    except Exception as exc:
+        LOGGER.info("Secret HF_TOKEN indisponible localement: %s", exc)
+        return None
+
+
 def stop_with_error_log(user_message: str, context: str, exc: Exception) -> None:
     LOGGER.exception("%s: %s", context, exc)
     st.error(f"{user_message} Consulte le log `{LOG_PATH.as_posix()}`.")
@@ -90,387 +103,38 @@ def stop_with_error_log(user_message: str, context: str, exc: Exception) -> None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# HELPERS — DICTIONNAIRES
+# I/O LAYER — Settings, DataStore, DictRepository (cf. ina_core.store)
 # ──────────────────────────────────────────────────────────────────────────────
 
-def empty_theme_dictionary() -> Dict[str, List[str]]:
-    return {"concept": [], "context": [], "up": [], "down": []}
+SETTINGS = Settings(
+    hf_repo_id="zouloulouu/data_ina_clean",
+    hf_parquet_files=DEFAULT_HF_PARQUET_FILES,
+    hf_token=get_hf_token(),
+    project_root=Path.cwd(),
+)
+
+DATA_STORE = DataStore(SETTINGS)
+
+DICT_REPO = CompositeDictRepository(
+    primary=LocalJsonRepository(SETTINGS.dictionary_path),
+    mirror=(
+        HuggingFaceRepository(SETTINGS.hf_repo_id, SETTINGS.hf_token)
+        if SETTINGS.hf_token else None
+    ),
+)
 
 
-def clean_term_list(values) -> List[str]:
-    if not isinstance(values, list):
-        return []
-    return [str(v).strip() for v in values if str(v).strip()]
-
-
-def normalize_theme_dictionary(raw_theme) -> Dict[str, List[str]]:
-    if isinstance(raw_theme, list):
-        return {"concept": clean_term_list(raw_theme), "context": [], "up": [], "down": []}
-    if not isinstance(raw_theme, dict):
-        return empty_theme_dictionary()
-    return {
-        "concept": clean_term_list(raw_theme.get("concept", [])),
-        "context": clean_term_list(raw_theme.get("context", [])),
-        "up": clean_term_list(raw_theme.get("up", [])),
-        "down": clean_term_list(raw_theme.get("down", [])),
-    }
-
-
-def normalize_dictionaries_payload(raw_data) -> Dict[str, Dict[str, List[str]]]:
-    out: Dict[str, Dict[str, List[str]]] = {}
-    if not isinstance(raw_data, dict):
-        return out
-    for key, payload in raw_data.items():
-        if not isinstance(key, str):
-            continue
-        theme = key.strip()
-        if not theme:
-            continue
-        out[theme] = normalize_theme_dictionary(payload)
-    return out
-
-
-def clone_dictionaries(d: Dict) -> Dict:
-    return json.loads(json.dumps(d, ensure_ascii=False))
-
-
-def normalize_text(value: str) -> str:
-    if not isinstance(value, str):
-        return ""
-    text = value.strip().lower()
-    text = "".join(
-        c for c in unicodedata.normalize("NFD", text) if unicodedata.category(c) != "Mn"
-    )
-    return text
-
-
-def load_dictionaries(path: str) -> Dict[str, Dict[str, List[str]]]:
-    if not os.path.exists(path):
-        return clone_dictionaries(DEFAULT_DICTIONARIES)
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            raw = f.read().strip()
-        if not raw:
-            return clone_dictionaries(DEFAULT_DICTIONARIES)
-        data = json.loads(raw)
-        out = normalize_dictionaries_payload(data)
-        return out if out else clone_dictionaries(DEFAULT_DICTIONARIES)
-    except Exception as exc:
-        LOGGER.exception("Impossible de charger le dictionnaire %s: %s", path, exc)
-        return clone_dictionaries(DEFAULT_DICTIONARIES)
-
-
-def save_dictionaries(path: str, dictionaries: Dict[str, Dict[str, List[str]]]) -> None:
-    normalized = normalize_dictionaries_payload(dictionaries)
-    tmp_path = f"{path}.tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(normalized, f, ensure_ascii=False, indent=2)
-    os.replace(tmp_path, path)
-
-
-def load_dictionaries_from_hf(token: Optional[str]) -> Dict[str, Dict[str, List[str]]]:
-    import requests as _req
-    url = f"https://huggingface.co/datasets/{HF_REPO_ID}/resolve/main/dictionaries.json"
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
-    try:
-        r = _req.get(url, headers=headers, timeout=10)
-        if r.status_code == 200:
-            return normalize_dictionaries_payload(r.json())
-    except Exception as exc:
-        LOGGER.warning("Chargement dictionnaires HF impossible: %s", exc)
-    return {}
-
-
-def save_dictionaries_to_hf(dictionaries: Dict[str, Dict[str, List[str]]], token: Optional[str]) -> None:
-    if not token:
-        return
-    import io as _io
-    from huggingface_hub import HfApi
-    normalized = normalize_dictionaries_payload(dictionaries)
-    content = json.dumps(normalized, ensure_ascii=False, indent=2).encode("utf-8")
-    try:
-        HfApi().upload_file(
-            path_or_fileobj=_io.BytesIO(content),
-            path_in_repo="dictionaries.json",
-            repo_id=HF_REPO_ID,
-            repo_type="dataset",
-            token=token,
-            commit_message="Update dictionaries",
-        )
-    except Exception as exc:
-        LOGGER.warning("Sauvegarde dictionnaires HF impossible: %s", exc)
-        raise
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# HELPERS — CHARGEMENT DES DONNÉES
-# ──────────────────────────────────────────────────────────────────────────────
-
-
-@st.cache_resource(show_spinner="Chargement des données (première ouverture, ~2 min)...")
-def load_clean_parquets_from_hf() -> Tuple[pd.DataFrame, List[str]]:
-    import io
-    import requests
-
-    hf_token = st.secrets.get("HF_TOKEN", None)
-    headers = {"Authorization": f"Bearer {hf_token}"} if hf_token else {}
-    base_url = f"https://huggingface.co/datasets/{HF_REPO_ID}/resolve/main"
-    issues: List[str] = []
-    frames = []
-
-    for file_name in HF_PARQUET_FILES:
-        try:
-            url = f"{base_url}/{file_name}"
-            response = requests.get(url, headers=headers, timeout=300)
-            response.raise_for_status()
-            df = pd.read_parquet(io.BytesIO(response.content))
-            missing = [c for c in REQUIRED_CLEAN_COLUMNS if c not in df.columns]
-            if missing:
-                LOGGER.warning("Colonnes clean manquantes dans %s: %s", file_name, ", ".join(missing))
-                issues.append(f"Colonnes manquantes dans {file_name} : {', '.join(missing)}")
-                continue
-            keep_cols = [c for c in REQUIRED_CLEAN_COLUMNS if c in df.columns]
-            normalized = df[keep_cols].copy()
-            normalized["_date"] = pd.to_datetime(normalized["_date"], errors="coerce")
-            normalized = normalized[normalized["_date"].notna()].copy()
-            if normalized.empty:
-                LOGGER.warning("Aucune date valide dans %s", file_name)
-                issues.append(f"Aucune date valide dans {file_name}.")
-                continue
-            normalized["title"] = normalized["title"].fillna("").astype(str)
-            normalized["_title_norm"] = normalized["_title_norm"].fillna("").astype(str)
-            normalized["_channel"] = (
-                normalized["_channel"].fillna("(sans chaîne)").astype(str).str.strip()
-            )
-            frames.append(normalized)
-            LOGGER.info("Chargé HF : %s | %d lignes", file_name, len(normalized))
-        except Exception as exc:
-            LOGGER.exception("Lecture HF impossible sur %s: %s", file_name, exc)
-            issues.append(f"Lecture impossible depuis HuggingFace : {file_name} ({exc})")
-
-    if not frames:
-        return pd.DataFrame(), issues
-    return pd.concat(frames, ignore_index=True, sort=False), issues
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# LOGIQUE MÉTIER — MARQUAGE (TAGGING)
-# ──────────────────────────────────────────────────────────────────────────────
-
-def prepare_keywords(keywords: List[str]) -> List[str]:
-    normalized = [normalize_text(k) for k in keywords if str(k).strip()]
-    return sorted(set(k for k in normalized if k))
-
-
-def count_occurrences(text_norm: str, keywords_norm: List[str]) -> int:
-    """Compte les occurrences brutes (peut être > 1 par titre).
-    Utiliser is_match (binaire) pour construire un signal de présence/absence.
-    """
-    if not text_norm:
-        return 0
-    total = 0
-    for keyword in keywords_norm:
-        if len(keyword) <= 4 and keyword.isalpha():
-            total += len(re.findall(rf"\b{re.escape(keyword)}\b", text_norm))
-        else:
-            total += text_norm.count(keyword)
-    return total
-
-
-def add_tagging_columns_hier(
-    df: pd.DataFrame,
-    title_col: str,
-    concept_norm: List[str],
-    context_norm: List[str],
-    up_norm: List[str],
-    down_norm: List[str],
-    title_norm_col: Optional[str] = None,
-) -> pd.DataFrame:
-    """Marque chaque observation avec les colonnes de présence et de sens.
-
-    Logique de matching (binaire) :
-      - is_match = 1 si le titre contient au moins un mot-clé concept, 0 sinon.
-
-    Logique de direction (4 états) :
-      - FLAT (0)      : titre non matché, ou matché sans terme UP/DOWN
-      - UP (1)        : matché + au moins un terme UP, aucun terme DOWN
-      - DOWN (-1)     : matché + au moins un terme DOWN, aucun terme UP
-      - AMBIGUOUS (2) : matché + termes UP ET DOWN présents simultanément
-
-    Le cas AMBIGU est signalé explicitement plutôt que de choisir arbitrairement
-    le signal dominant, ce qui biaiserait l'indicateur.
-    """
-    if title_norm_col and title_norm_col in df.columns:
-        titles_norm = df[title_norm_col].fillna("").astype(str)
-    else:
-        titles_norm = df[title_col].fillna("").astype(str).map(normalize_text)
-
-    df["occ_concept"] = titles_norm.map(lambda x: count_occurrences(x, concept_norm))
-    df["occ_context"] = 0  # conservé pour compatibilité JSON, non utilisé dans le matching
-    df["occ_up"] = titles_norm.map(lambda x: count_occurrences(x, up_norm))
-    df["occ_down"] = titles_norm.map(lambda x: count_occurrences(x, down_norm))
-
-    df["is_concept"] = (df["occ_concept"] > 0).astype("int8")
-    df["is_context"] = 0
-    df["is_match_broad"] = df["is_concept"].astype("int8")
-    df["is_match_strict"] = df["is_match_broad"].astype("int8")
-    df["is_match"] = df["is_match_broad"].astype("int8")
-
-    # Direction 4 états — basée sur la présence binaire (pas sur le comptage brut)
-    has_up = df["occ_up"] > 0
-    has_down = df["occ_down"] > 0
-    matched = df["is_match"] == 1
-
-    direction = pd.Series(DIRECTION_FLAT, index=df.index, dtype="int8")
-    direction.loc[matched & has_up & ~has_down] = DIRECTION_UP
-    direction.loc[matched & has_down & ~has_up] = DIRECTION_DOWN
-    direction.loc[matched & has_up & has_down] = DIRECTION_AMBIGUOUS
-    df["direction"] = direction
-
-    return df
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# LOGIQUE MÉTIER — AGRÉGATION TEMPORELLE
-# ──────────────────────────────────────────────────────────────────────────────
-
-def periodize(series: pd.Series, frequency: str) -> pd.Series:
-    if frequency == "Trimestrielle":
-        return series.dt.to_period("Q").dt.to_timestamp()
-    if frequency == "Annuelle":
-        return series.dt.to_period("Y").dt.to_timestamp()
-    return series.dt.to_period("M").dt.to_timestamp()
-
-
-def aggregate_by_period(df: pd.DataFrame, frequency: str) -> pd.DataFrame:
-    out = df.assign(period_start=periodize(df["_date"], frequency)).copy()
-    out["_match_mode"] = out["is_match"].astype(int)
-    out["occurrences_concept"] = out["occ_concept"] * out["_match_mode"]
-    out["up_flag"] = (out["direction"] == DIRECTION_UP).astype(int)
-    out["down_flag"] = (out["direction"] == DIRECTION_DOWN).astype(int)
-    out["ambiguous_flag"] = (out["direction"] == DIRECTION_AMBIGUOUS).astype(int)
-
-    stats = (
-        out.groupby("period_start", as_index=False)
-        .agg(
-            total_titles=("_match_mode", "size"),
-            broad_matched_titles=("is_match_broad", "sum"),
-            strict_matched_titles=("is_match_strict", "sum"),
-            matched_titles=("is_match", "sum"),
-            occurrences_concept=("occurrences_concept", "sum"),
-            up_titles=("up_flag", "sum"),
-            down_titles=("down_flag", "sum"),
-            ambiguous_titles=("ambiguous_flag", "sum"),
-        )
-        .sort_values("period_start")
-    )
-    stats["frequency"] = stats["broad_matched_titles"] / stats["total_titles"]
-    stats["strict_frequency"] = stats["strict_matched_titles"] / stats["total_titles"]
-    stats["net_signal"] = stats["up_titles"] - stats["down_titles"]
-    stats["direction_share_up"] = stats["up_titles"] / stats["strict_matched_titles"].replace(0, pd.NA)
-    stats["direction_share_down"] = stats["down_titles"] / stats["strict_matched_titles"].replace(0, pd.NA)
-    return stats
-
-
-def build_descriptive_table(stats: pd.DataFrame, df_tagged: pd.DataFrame) -> pd.DataFrame:
-    if stats.empty or df_tagged.empty:
-        return pd.DataFrame(columns=["indicateur", "valeur"])
-
-    total_titles = int(len(df_tagged))
-    matched_titles = int(df_tagged["is_match"].sum())
-    occ_concept_total = int(df_tagged.loc[df_tagged["is_match"] == 1, "occ_concept"].sum())
-    up_titles = int((df_tagged["direction"] == DIRECTION_UP).sum())
-    down_titles = int((df_tagged["direction"] == DIRECTION_DOWN).sum())
-    ambiguous_titles = int((df_tagged["direction"] == DIRECTION_AMBIGUOUS).sum())
-    net_signal = up_titles - down_titles
-
-    return pd.DataFrame([
-        {"indicateur": "Titres analysés", "valeur": total_titles},
-        {"indicateur": "Titres matchés (présence concept, binaire)", "valeur": matched_titles},
-        {"indicateur": "Occurrences brutes concept (intensité)", "valeur": occ_concept_total},
-        {"indicateur": "Signal UP (sens haussier)", "valeur": up_titles},
-        {"indicateur": "Signal DOWN (sens baissier)", "valeur": down_titles},
-        {"indicateur": "Signal AMBIGU (UP + DOWN simultanés)", "valeur": ambiguous_titles},
-        {"indicateur": "Signal net (UP - DOWN)", "valeur": net_signal},
-        {"indicateur": "Fréquence moyenne", "valeur": round(float(stats["frequency"].mean()), 4)},
-        {"indicateur": "Fréquence médiane", "valeur": round(float(stats["frequency"].median()), 4)},
-        {"indicateur": "Fréquence max", "valeur": round(float(stats["frequency"].max()), 4)},
-        {"indicateur": "Volume moyen (titres matchés / période)", "valeur": round(float(stats["matched_titles"].mean()), 1)},
-        {"indicateur": "Nombre de périodes", "valeur": int(len(stats))},
-    ])
-
-
-def build_top_channels(df_tagged: pd.DataFrame) -> pd.DataFrame:
-    if "_channel" not in df_tagged.columns:
-        return pd.DataFrame()
-    work = df_tagged.copy()
-    work["_match_mode"] = work["is_match"].astype(int)
-    work["occurrences_concept"] = work["occ_concept"] * work["_match_mode"]
-    work["up_flag"] = (work["direction"] == DIRECTION_UP).astype(int)
-    work["down_flag"] = (work["direction"] == DIRECTION_DOWN).astype(int)
-    work["ambiguous_flag"] = (work["direction"] == DIRECTION_AMBIGUOUS).astype(int)
-    top = (
-        work.groupby("_channel", as_index=False)
-        .agg(
-            total_titles=("_match_mode", "size"),
-            matched_titles=("_match_mode", "sum"),
-            strict_matched_titles=("is_match_strict", "sum"),
-            occurrences_concept=("occurrences_concept", "sum"),
-            up_titles=("up_flag", "sum"),
-            down_titles=("down_flag", "sum"),
-            ambiguous_titles=("ambiguous_flag", "sum"),
-        )
-        .sort_values("matched_titles", ascending=False)
-    )
-    top["frequency"] = top["matched_titles"] / top["total_titles"]
-    top["net_signal"] = top["up_titles"] - top["down_titles"]
-    return top.head(10)
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# LOGIQUE MÉTIER — STATISTIQUES PAR CHAÎNE
-# ──────────────────────────────────────────────────────────────────────────────
-
-def build_channel_stats(df_base: pd.DataFrame) -> pd.DataFrame:
-    """Statistiques de couverture par chaîne sur le jeu de données complet (non filtré).
-
-    Retourne pour chaque chaîne : date_min, date_max, n_obs, share_pct.
-    Vectorisé via groupby pour éviter la boucle Python sur les groupes.
-    """
-    if "_channel" not in df_base.columns or "_date" not in df_base.columns:
-        return pd.DataFrame()
-
-    total = len(df_base)
-    valid = df_base[df_base["_date"].notna()]
-    if valid.empty:
-        return pd.DataFrame()
-
-    stats = (
-        valid.groupby("_channel", as_index=False)
-        .agg(date_min=("_date", "min"), date_max=("_date", "max"), n_obs=("_date", "count"))
-    )
-    stats["share_pct"] = (stats["n_obs"] / total * 100).round(2)
-    return stats.sort_values("n_obs", ascending=False).reset_index(drop=True)
-
-
-def build_decade_distribution(df_base: pd.DataFrame) -> pd.DataFrame:
-    """Distribution des observations par décennie et par chaîne (format long).
-
-    Retourne : _channel, decade (int), decade_label (str), n, pct (% dans la chaîne).
-    """
-    if "_channel" not in df_base.columns or "_date" not in df_base.columns:
-        return pd.DataFrame()
-    df = df_base[df_base["_date"].notna()].copy()
-    df["decade"] = (df["_date"].dt.year // 10) * 10
-    df["decade_label"] = df["decade"].astype(str) + "–" + (df["decade"] + 9).astype(str)
-    cross = (
-        df.groupby(["_channel", "decade_label", "decade"], as_index=False)
-        .size()
-        .rename(columns={"size": "n"})
-    )
-    channel_totals = cross.groupby("_channel")["n"].transform("sum")
-    cross["pct"] = (cross["n"] / channel_totals * 100).round(1)
-    return cross.sort_values(["_channel", "decade"]).reset_index(drop=True)
+@st.cache_resource(show_spinner="Chargement des données (snapshot local sinon HuggingFace)...")
+def load_corpus() -> Tuple[pd.DataFrame, List[str], str]:
+    """Wrap DataStore.load with Streamlit cache. Returns (df, issues, source_label)."""
+    df, issues = DATA_STORE.load(prefer="auto")
+    # Détecte la source à partir des messages d'issues pour l'afficher dans l'UI.
+    source = "local"
+    if any("bascule sur HuggingFace" in i for i in issues):
+        source = "hf"
+    elif any("Snapshot local introuvable" in i for i in issues):
+        source = "hf"  # local was missing from the start
+    return df, issues, source
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -512,15 +176,20 @@ st.caption(
 # CHARGEMENT DES DONNÉES
 # ──────────────────────────────────────────────────────────────────────────────
 
-data_signature = HF_PARQUET_FILES
+data_signature = SETTINGS.hf_parquet_files
 try:
-    df_base, load_issues = load_clean_parquets_from_hf()
+    df_base, load_issues, load_source = load_corpus()
 except Exception as _hf_exc:
-    st.error(f"Erreur chargement HuggingFace : {_hf_exc}")
+    st.error(f"Erreur chargement corpus : {_hf_exc}")
     st.stop()
 
+_SOURCE_LABEL = {
+    "local": f"snapshot local (`{SETTINGS.clean_dir.as_posix()}/CURRENT`)",
+    "hf": f"HuggingFace `{SETTINGS.hf_repo_id}`",
+}.get(load_source, load_source)
+
 with st.expander("Données chargées", expanded=False):
-    st.caption(f"Source : `{HF_REPO_ID}` (HuggingFace Datasets)")
+    st.caption(f"Source : {_SOURCE_LABEL}")
     for issue in load_issues:
         st.warning(issue)
     if not df_base.empty:
@@ -533,22 +202,23 @@ with st.expander("Données chargées", expanded=False):
         )
 
 if df_base.empty:
-    st.warning(f"Aucune donnée chargée depuis `{HF_REPO_ID}`.")
+    st.warning("Aucune donnée chargée (ni snapshot local, ni HuggingFace).")
+    if load_issues:
+        with st.expander("Détail du chargement", expanded=True):
+            for issue in load_issues:
+                st.warning(issue)
     st.stop()
 
 # ──────────────────────────────────────────────────────────────────────────────
 # SESSION STATE — DICTIONNAIRES
+# Lecture via CompositeDictRepository : local d'abord, HF en bootstrap si vide,
+# puis fallback sur DEFAULT_DICTIONARIES si tout est vide.
 # ──────────────────────────────────────────────────────────────────────────────
 
 if "dictionaries" not in st.session_state:
-    _hf_token = st.secrets.get("HF_TOKEN", None)
-    _hf_dicts = load_dictionaries_from_hf(_hf_token)
-    st.session_state["dictionaries"] = _hf_dicts if _hf_dicts else load_dictionaries(DICTIONARY_PATH)
-    st.session_state["_hf_write_token"] = _hf_token
+    _loaded = DICT_REPO.load()
+    st.session_state["dictionaries"] = _loaded if _loaded else clone_dictionaries(DEFAULT_DICTIONARIES)
 
-# Les dicts sont normalisés au chargement (load_dictionaries) et à chaque
-# sauvegarde (save_dictionaries). On fait confiance au session_state directement
-# pour éviter de renormaliser tous les termes à chaque rerun.
 dictionaries = st.session_state["dictionaries"]
 if not isinstance(dictionaries, dict) or not dictionaries:
     dictionaries = clone_dictionaries(DEFAULT_DICTIONARIES)
@@ -613,9 +283,13 @@ with st.expander("Statistiques des chaînes — couverture du jeu de données", 
             width="stretch",
         )
 
-        # Distribution par décennie
+        # Distribution par décennie — barres groupées (chaque décennie somme à 100% sur ses chaînes)
         if not decade_df.empty:
-            st.markdown("**Distribution des observations par décennie** (% des obs. de chaque chaîne)")
+            st.markdown("**Part de chaque chaîne dans chaque décennie** (chaque décennie somme à 100 %)")
+            st.caption(
+                "Lecture : pour une décennie donnée, comment se répartissent les observations "
+                "entre chaînes."
+            )
             _sorted_decades = sorted(
                 decade_df["decade_label"].unique(),
                 key=lambda x: int(x.split("–")[0]),
@@ -629,13 +303,14 @@ with st.expander("Statistiques des chaînes — couverture du jeu de données", 
                 category_orders={"decade_label": _sorted_decades},
                 labels={
                     "decade_label": "Décennie",
-                    "pct": "Part (%)",
+                    "pct": "Part (%) dans la décennie",
                     "_channel": "Chaîne",
                 },
                 height=380,
             )
             fig_dec.update_layout(
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                yaxis=dict(ticksuffix=" %"),
             )
             st.plotly_chart(fig_dec, width="stretch")
 
@@ -666,9 +341,9 @@ with st.expander("Statistiques des chaînes — couverture du jeu de données", 
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# BARRE LATÉRALE — PARAMÈTRES
-# Rendu AVANT l'expander thèmes pour que `theme` soit défini
-# avant que le bloc "Modifier le thème" le lise.
+# BARRE LATÉRALE — FORM UNIQUE (filtres bufferisés jusqu'au clic Appliquer)
+# Tous les widgets de filtrage sont dans un st.form pour éviter les reruns en
+# cascade quand l'utilisateur enchaîne plusieurs changements.
 # ──────────────────────────────────────────────────────────────────────────────
 
 themes = sorted(dictionaries.keys())
@@ -680,37 +355,136 @@ if not themes:
 if "theme" not in st.session_state or st.session_state["theme"] not in themes:
     st.session_state["theme"] = themes[0]
 
+# Métadonnées du corpus (df_base — indépendant du thème actif)
+_min_date = df_base["_date"].min()
+_max_date = df_base["_date"].max()
+_default_start = _max_date - pd.DateOffset(years=2)
+if _default_start < _min_date:
+    _default_start = _min_date
+
+_all_channels_full = sorted(
+    c for c in df_base["_channel"].dropna().unique().tolist() if str(c).strip()
+)
+if not _all_channels_full:
+    _all_channels_full = ["(sans chaîne)"]
+
+_FREQUENCIES = ["Mensuelle", "Trimestrielle", "Annuelle"]
+_COUNT_MODES = ["Binaire (présence / absence)", "Intensité (occurrences brutes)"]
+
+# État appliqué — initialisé une fois, modifié uniquement sur clic Appliquer
+if "filters" not in st.session_state:
+    st.session_state["filters"] = {
+        "frequency": _FREQUENCIES[0],
+        "count_mode": _COUNT_MODES[0],
+        "date_start": _default_start.date(),
+        "date_end": _max_date.date(),
+        "channels": list(_all_channels_full),
+    }
+
+# Garde-fou : si une chaîne appliquée a disparu du corpus, on filtre.
+_applied_channels = [c for c in st.session_state["filters"]["channels"] if c in _all_channels_full]
+if not _applied_channels:
+    _applied_channels = list(_all_channels_full)
+st.session_state["filters"]["channels"] = _applied_channels
+
 st.sidebar.header("Paramètres")
 
-current_theme = st.session_state.get("theme", themes[0] if themes else "")
-theme = st.sidebar.selectbox(
-    "Thème actif",
-    options=themes,
-    index=themes.index(current_theme) if current_theme in themes else 0,
-    help="Le thème dont les concepts sont recherchés dans les titres. "
-         "Créez ou modifiez des thèmes dans la section « Thèmes et dictionnaires » ci-dessus.",
-)
-st.session_state["theme"] = theme
+with st.sidebar.form("filters_form", border=False):
+    _pending_theme = st.selectbox(
+        "Thème actif",
+        options=themes,
+        index=themes.index(st.session_state["theme"]),
+        help="Le thème dont les concepts sont recherchés dans les titres. "
+             "Créez ou modifiez des thèmes dans la section « Thèmes et dictionnaires ».",
+    )
+    _pending_freq = st.selectbox(
+        "Fréquence",
+        _FREQUENCIES,
+        index=_FREQUENCIES.index(st.session_state["filters"]["frequency"]),
+        help="Période d'agrégation des résultats.",
+    )
+    _pending_count_mode = st.radio(
+        "Mode de comptage",
+        options=_COUNT_MODES,
+        index=_COUNT_MODES.index(st.session_state["filters"]["count_mode"]),
+        help=(
+            "**Binaire** : chaque titre vaut 1 s'il contient le concept, 0 sinon. "
+            "C'est l'approche recommandée pour construire un signal de saillance médiatique. \n\n"
+            "**Intensité** : somme des occurrences brutes du concept dans les titres. "
+            "Utile pour vérifier la robustesse, mais attention au surcompte."
+        ),
+    )
 
-frequency = st.sidebar.selectbox(
-    "Fréquence",
-    ["Mensuelle", "Trimestrielle", "Annuelle"],
-    index=0,
-    help="Période d'agrégation des résultats.",
-)
+    st.divider()
+    st.markdown("**Période**")
+    _dcol1, _dcol2 = st.columns(2)
+    _pending_date_start = _dcol1.date_input(
+        "Du",
+        value=st.session_state["filters"]["date_start"],
+        min_value=_min_date.date(),
+        max_value=_max_date.date(),
+        format="DD/MM/YYYY",
+    )
+    _pending_date_end = _dcol2.date_input(
+        "Au",
+        value=st.session_state["filters"]["date_end"],
+        min_value=_min_date.date(),
+        max_value=_max_date.date(),
+        format="DD/MM/YYYY",
+    )
 
-count_mode = st.sidebar.radio(
-    "Mode de comptage",
-    options=["Binaire (présence / absence)", "Intensité (occurrences brutes)"],
-    index=0,
-    help=(
-        "**Binaire** : chaque titre vaut 1 s'il contient le concept, 0 sinon. "
-        "C'est l'approche recommandée pour construire un signal de saillance médiatique. \n\n"
-        "**Intensité** : somme des occurrences brutes du concept dans les titres. "
-        "Utile pour vérifier la robustesse, mais attention au surcompte."
-    ),
-)
+    st.markdown("**Chaînes**")
+    _pending_channels = st.multiselect(
+        "Filtre chaînes",
+        options=_all_channels_full,
+        default=st.session_state["filters"]["channels"],
+        label_visibility="collapsed",
+    )
+
+    _apply = st.form_submit_button(
+        "Appliquer", type="primary", use_container_width=True
+    )
+    _full_range = st.form_submit_button(
+        "Plage complète + toutes chaînes", use_container_width=True,
+        help="Réinitialise la période et la sélection chaînes au maximum.",
+    )
+
+if _full_range:
+    st.session_state["theme"] = _pending_theme
+    st.session_state["filters"] = {
+        "frequency": _pending_freq,
+        "count_mode": _pending_count_mode,
+        "date_start": _min_date.date(),
+        "date_end": _max_date.date(),
+        "channels": list(_all_channels_full),
+    }
+    st.rerun()
+
+if _apply:
+    if _pending_date_start > _pending_date_end:
+        st.sidebar.error("La date de début doit être avant la date de fin.")
+        st.stop()
+    if not _pending_channels:
+        st.sidebar.error("Sélectionnez au moins une chaîne.")
+        st.stop()
+    st.session_state["theme"] = _pending_theme
+    st.session_state["filters"] = {
+        "frequency": _pending_freq,
+        "count_mode": _pending_count_mode,
+        "date_start": _pending_date_start,
+        "date_end": _pending_date_end,
+        "channels": _pending_channels,
+    }
+
+# Lecture de l'état appliqué pour le reste du script
+theme = st.session_state["theme"]
+_filters = st.session_state["filters"]
+frequency = _filters["frequency"]
+count_mode = _filters["count_mode"]
 binary_mode = count_mode.startswith("Binaire")
+date_start = pd.Timestamp(_filters["date_start"])
+date_end = pd.Timestamp(_filters["date_end"])
+selected_channels = _filters["channels"]
 
 with st.sidebar.expander("Diagnostics", expanded=False):
     st.caption(f"Log erreurs : `{LOG_PATH.as_posix()}`")
@@ -779,8 +553,7 @@ with st.expander("Thèmes et dictionnaires", expanded=dict_expander_open):
             )
             st.session_state["dict_expander_open"] = True
             try:
-                save_dictionaries(DICTIONARY_PATH, dictionaries)
-                save_dictionaries_to_hf(dictionaries, st.session_state.get("_hf_write_token"))
+                DICT_REPO.save(dictionaries)
             except Exception as exc:
                 LOGGER.exception("Écriture dictionnaire impossible (création) : %s", exc)
                 st.warning(f"Impossible d'écrire le fichier dictionnaire ({exc}).")
@@ -818,8 +591,7 @@ with st.expander("Thèmes et dictionnaires", expanded=dict_expander_open):
             st.session_state["dict_flash"] = f"Thème renommé : « {theme_edit} » → « {new_name} »."
             st.session_state["dict_expander_open"] = True
             try:
-                save_dictionaries(DICTIONARY_PATH, dictionaries)
-                save_dictionaries_to_hf(dictionaries, st.session_state.get("_hf_write_token"))
+                DICT_REPO.save(dictionaries)
             except Exception as exc:
                 LOGGER.exception("Écriture dictionnaire impossible (renommage) : %s", exc)
                 st.warning(f"Impossible d'écrire le fichier dictionnaire ({exc}).")
@@ -888,8 +660,7 @@ with st.expander("Thèmes et dictionnaires", expanded=dict_expander_open):
         }
         st.session_state["dictionaries"] = dictionaries
         try:
-            save_dictionaries(DICTIONARY_PATH, dictionaries)
-            save_dictionaries_to_hf(dictionaries, st.session_state.get("_hf_write_token"))
+            DICT_REPO.save(dictionaries)
             st.success(
                 f"Dictionnaire « {theme_edit} » enregistré : "
                 f"{len(new_concept)} concept(s) · {len(new_up)} terme(s) UP · {len(new_down)} terme(s) DOWN."
@@ -929,8 +700,7 @@ with st.expander("Thèmes et dictionnaires", expanded=dict_expander_open):
                 st.session_state["dict_flash"] = f"Thème « {theme_edit} » supprimé."
                 st.session_state["dict_expander_open"] = True
                 try:
-                    save_dictionaries(DICTIONARY_PATH, dictionaries)
-                    save_dictionaries_to_hf(dictionaries, st.session_state.get("_hf_write_token"))
+                    DICT_REPO.save(dictionaries)
                 except Exception as exc:
                     LOGGER.exception("Écriture dictionnaire impossible (suppression) : %s", exc)
                     st.warning(f"Impossible d'écrire le fichier dictionnaire ({exc}).")
@@ -946,8 +716,7 @@ with st.expander("Thèmes et dictionnaires", expanded=dict_expander_open):
             st.session_state["dictionaries"] = clone_dictionaries(DEFAULT_DICTIONARIES)
             st.session_state["theme"] = sorted(DEFAULT_DICTIONARIES.keys())[0]
             try:
-                save_dictionaries(DICTIONARY_PATH, st.session_state["dictionaries"])
-                save_dictionaries_to_hf(st.session_state["dictionaries"], st.session_state.get("_hf_write_token"))
+                DICT_REPO.save(st.session_state["dictionaries"])
             except Exception as exc:
                 LOGGER.exception("Écriture dictionnaire impossible (reset) : %s", exc)
                 st.warning(f"Impossible d'écrire le fichier dictionnaire ({exc}).")
@@ -994,17 +763,16 @@ tag_cache_key = json.dumps(cache_payload, ensure_ascii=False, sort_keys=True)
 
 if tag_cache_key not in tagging_cache:
     try:
-        tagging_cache[tag_cache_key] = add_tagging_columns_hier(
-            df_base.copy(),
+        tagging_cache[tag_cache_key] = tag_dataframe(
+            df_base,
             title_col=title_col,
             concept_norm=concept_norm,
-            context_norm=[],
             up_norm=up_norm,
             down_norm=down_norm,
             title_norm_col="_title_norm",
         )
     except Exception as exc:
-        stop_with_error_log("Erreur pendant le marquage des titres.", "add_tagging_columns_hier", exc)
+        stop_with_error_log("Erreur pendant le marquage des titres.", "tag_dataframe", exc)
     while len(tagging_cache) > 2:
         tagging_cache.pop(next(iter(tagging_cache)))
 
@@ -1012,88 +780,14 @@ df_tagged = tagging_cache[tag_cache_key]
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# FILTRE PÉRIODE
+# APPLICATION DES FILTRES (période + chaînes — déjà bufferisés via le form)
 # ──────────────────────────────────────────────────────────────────────────────
 
-min_date_ts = df_tagged["_date"].min()
-max_date_ts = df_tagged["_date"].max()
-default_start_ts = max_date_ts - pd.DateOffset(years=2)
-if default_start_ts < min_date_ts:
-    default_start_ts = min_date_ts
-
-try:
-    if st.sidebar.button("Plage complète", key="date_full_range"):
-        st.session_state["date_input_start"] = min_date_ts.date()
-        st.session_state["date_input_end"] = max_date_ts.date()
-
-    _dcol1, _dcol2 = st.sidebar.columns(2)
-    date_start = _dcol1.date_input(
-        "Du",
-        value=default_start_ts.date(),
-        min_value=min_date_ts.date(),
-        max_value=max_date_ts.date(),
-        format="DD/MM/YYYY",
-        key="date_input_start",
-    )
-    date_end = _dcol2.date_input(
-        "Au",
-        value=max_date_ts.date(),
-        min_value=min_date_ts.date(),
-        max_value=max_date_ts.date(),
-        format="DD/MM/YYYY",
-        key="date_input_end",
-    )
-    date_start = pd.Timestamp(date_start)
-    date_end = pd.Timestamp(date_end)
-    if date_start > date_end:
-        st.sidebar.error("La date de début doit être avant la date de fin.")
-        st.stop()
-except Exception as exc:
-    stop_with_error_log("Erreur lors du filtre de période.", "date_input Periode", exc)
-
-# Masque de période (appliqué sur df_tagged directement, sans copy intermédiaire)
-_period_mask = (
-    (df_tagged["_date"] >= pd.Timestamp(date_start))
-    & (df_tagged["_date"] <= pd.Timestamp(date_end))
-)
+# Masque de période
+_period_mask = (df_tagged["_date"] >= date_start) & (df_tagged["_date"] <= date_end)
 if not _period_mask.any():
     st.warning("Aucune donnée dans la période sélectionnée.")
     st.stop()
-
-# ──────────────────────────────────────────────────────────────────────────────
-# FILTRE CHAÎNES
-# ──────────────────────────────────────────────────────────────────────────────
-
-all_channels = sorted(
-    c for c in df_tagged.loc[_period_mask, "_channel"].dropna().unique().tolist()
-    if str(c).strip()
-)
-if not all_channels:
-    all_channels = ["(sans chaîne)"]
-
-st.sidebar.markdown("---")
-_cc1, _cc2 = st.sidebar.columns(2)
-if _cc1.button("Toutes", key="ch_all"):
-    st.session_state["_ch_sel"] = all_channels
-if _cc2.button("Aucune", key="ch_none"):
-    st.session_state["_ch_sel"] = []
-
-# Réinitialise si la sélection contient des chaînes absentes de la période courante
-_current_sel = st.session_state.get("_ch_sel", all_channels)
-_valid_sel = [c for c in _current_sel if c in all_channels]
-if not _valid_sel:
-    _valid_sel = all_channels
-st.session_state["_ch_sel"] = _valid_sel
-
-selected_channels = st.sidebar.multiselect(
-    "Filtre chaînes",
-    options=all_channels,
-    default=_valid_sel,
-)
-if not selected_channels:
-    st.warning("Sélectionnez au moins une chaîne.")
-    st.stop()
-st.session_state["_ch_sel"] = selected_channels
 
 # df_period : période seule, avant filtre chaîne (utilisé pour top_channels)
 # df_filtered : période + filtre chaîne (utilisé pour tout le reste)
@@ -1128,7 +822,7 @@ if agg_cache_key not in agg_cache:
         _t0 = time.perf_counter()
         stats = aggregate_by_period(df_filtered, frequency=frequency)
         desc = build_descriptive_table(stats, df_filtered)
-        top_channels = build_top_channels(df_period)
+        top_channels = build_top_channels(df_filtered)
         agg_cache[agg_cache_key] = (stats, desc, top_channels)
         LOGGER.info(
             "Agrégation recalculée en %.0f ms (freq=%s, n=%d)",
@@ -1321,8 +1015,7 @@ st.dataframe(desc, hide_index=True, width="stretch")
 if has_source_channel:
     st.subheader("Top 10 chaînes — titres matchés sur la période")
     st.caption(
-        "Calculé sur la période sélectionnée, **avant** application du filtre chaîne, "
-        "pour permettre la comparaison entre chaînes."
+        "Calculé sur la période **et** les chaînes sélectionnées."
     )
 
     if not top_channels.empty:

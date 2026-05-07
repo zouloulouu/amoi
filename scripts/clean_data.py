@@ -21,7 +21,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -71,17 +70,7 @@ MAX_DROP_RATIO = 0.30
 # PURE HELPERS
 # ──────────────────────────────────────────────────────────────────────────────
 
-def normalize_text(value: Any) -> str:
-    """Exact replica of app.py normalize_text — used to build _title_norm."""
-    if not isinstance(value, str):
-        if value is None or (isinstance(value, float) and value != value):
-            return ""
-        value = str(value)
-    text = value.strip().lower()
-    text = "".join(
-        c for c in unicodedata.normalize("NFD", text) if unicodedata.category(c) != "Mn"
-    )
-    return text
+from ina_core import normalize_text
 
 
 def normalize_channel(raw: Any) -> str:

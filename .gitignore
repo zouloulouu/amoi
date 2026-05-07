@@ -11,6 +11,20 @@ __pycache__/
 *.pyc
 logs/
 reports/
+.streamlit/secrets.toml
+
+# Python tooling artifacts
+.pytest_cache/
+*.egg-info/
+.coverage
+.coverage.*
+
+# R session files
+.RData
+.Rhistory
+
+# Local Claude Code settings
+.claude/
 
 # Keep only versioned clean snapshots in Git.
 data/*.parquet
