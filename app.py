@@ -6,6 +6,15 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+APP_DIR = Path(__file__).resolve().parent
+BACKEND_DIR = APP_DIR / "backend"
+if BACKEND_DIR.exists():
+    import sys
+
+    backend_path = str(BACKEND_DIR)
+    if backend_path not in sys.path:
+        sys.path.insert(0, backend_path)
+
 import pandas as pd
 import plotly.express as px
 import streamlit as st
