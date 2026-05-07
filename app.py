@@ -24,6 +24,7 @@ from ina_core import (
     DIRECTION_DOWN,
     DIRECTION_FLAT,
     DIRECTION_UP,
+    TaggingCache,
     aggregate_by_period,
     build_channel_stats,
     build_decade_distribution,
@@ -42,6 +43,8 @@ from ina_core.store import (
     HuggingFaceRepository,
     LocalJsonRepository,
     Settings,
+    ThemeAlreadyExists,
+    ThemeNotFound,
 )
 
 
@@ -146,6 +149,16 @@ def load_corpus() -> Tuple[pd.DataFrame, List[str], str]:
     return df, issues, source
 
 
+@st.cache_resource
+def get_tagging_cache() -> TaggingCache:
+    """Process-wide tagging cache, shared across all user sessions.
+
+    Without this, each session_state would hold its own tagged DataFrame
+    copy → mémoire ~150 Mo × N_users × N_themes_consultes.
+    """
+    return TaggingCache(maxsize=4)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # HELPERS — GRAPHIQUES
 # ──────────────────────────────────────────────────────────────────────────────
@@ -219,19 +232,13 @@ if df_base.empty:
     st.stop()
 
 # ──────────────────────────────────────────────────────────────────────────────
-# SESSION STATE — DICTIONNAIRES
-# Lecture via CompositeDictRepository : local d'abord, HF en bootstrap si vide,
-# puis fallback sur DEFAULT_DICTIONARIES si tout est vide.
+# DICTIONNAIRES — relus à chaque rerun pour voir les modifs des autres users.
+# Le coût est négligeable (~1 ms pour ~13 ko de JSON).
 # ──────────────────────────────────────────────────────────────────────────────
 
-if "dictionaries" not in st.session_state:
-    _loaded = DICT_REPO.load()
-    st.session_state["dictionaries"] = _loaded if _loaded else clone_dictionaries(DEFAULT_DICTIONARIES)
-
-dictionaries = st.session_state["dictionaries"]
-if not isinstance(dictionaries, dict) or not dictionaries:
-    dictionaries = clone_dictionaries(DEFAULT_DICTIONARIES)
-    st.session_state["dictionaries"] = dictionaries
+_loaded = DICT_REPO.load()
+dictionaries = _loaded if _loaded else clone_dictionaries(DEFAULT_DICTIONARIES)
+st.session_state["dictionaries"] = dictionaries
 
 title_col = "title" if "title" in df_base.columns else None
 has_source_channel = "_channel" in df_base.columns
@@ -499,15 +506,13 @@ with st.sidebar.expander("Diagnostics", expanded=False):
     st.caption(f"Log erreurs : `{LOG_PATH.as_posix()}`")
 
     if st.checkbox("Afficher l'état des caches", value=False):
-        tagging_cache_info = st.session_state.get("_tagged_theme_cache", {})
+        tagging_cache_size = len(get_tagging_cache())
         agg_cache_info = st.session_state.get("_agg_cache", {})
         ch_stats_cached = "_ch_stats_cache" in st.session_state
-        kw_cached = "_kw_cache_key" in st.session_state
         st.caption(
-            f"Cache tagging : {len(tagging_cache_info)} entrée(s)  \n"
-            f"Cache agrégation : {len(agg_cache_info)} entrée(s)  \n"
-            f"Cache stats chaînes : {'oui' if ch_stats_cached else 'non'}  \n"
-            f"Cache keywords : {'oui' if kw_cached else 'non'}"
+            f"Cache tagging (process-wide) : {tagging_cache_size} entrée(s)  \n"
+            f"Cache agrégation (par session) : {len(agg_cache_info)} entrée(s)  \n"
+            f"Cache stats chaînes : {'oui' if ch_stats_cached else 'non'}"
         )
 
     if st.checkbox("Afficher les 30 dernières lignes du log", value=False):
@@ -553,20 +558,24 @@ with st.expander("Thèmes et dictionnaires", expanded=dict_expander_open):
         elif nt in dictionaries:
             st.warning(f"Le thème « {nt} » existe déjà. Sélectionnez-le dans la barre latérale.")
         else:
-            dictionaries[nt] = empty_theme_dictionary()
-            st.session_state["dictionaries"] = dictionaries
-            st.session_state["theme"] = nt
-            st.session_state["dict_flash"] = (
-                f"Thème « {nt} » créé. Complétez maintenant son dictionnaire ci-dessous, "
-                "puis cliquez sur « Enregistrer »."
-            )
-            st.session_state["dict_expander_open"] = True
             try:
-                DICT_REPO.save(dictionaries)
+                DICT_REPO.create_theme(nt, empty_theme_dictionary())
+                get_tagging_cache().invalidate(nt)
+                st.session_state["theme"] = nt
+                st.session_state["dict_flash"] = (
+                    f"Thème « {nt} » créé. Complétez maintenant son dictionnaire ci-dessous, "
+                    "puis cliquez sur « Enregistrer »."
+                )
+                st.session_state["dict_expander_open"] = True
+                st.rerun()
+            except ThemeAlreadyExists:
+                st.warning(
+                    f"Le thème « {nt} » a été créé entre-temps par un autre utilisateur. "
+                    "Rafraîchis la page pour le voir."
+                )
             except Exception as exc:
                 LOGGER.exception("Écriture dictionnaire impossible (création) : %s", exc)
                 st.warning(f"Impossible d'écrire le fichier dictionnaire ({exc}).")
-            st.rerun()
 
     st.divider()
 
@@ -594,17 +603,24 @@ with st.expander("Thèmes et dictionnaires", expanded=dict_expander_open):
         elif new_name in dictionaries:
             st.warning(f"Un thème « {new_name} » existe déjà.")
         else:
-            dictionaries[new_name] = dictionaries.pop(theme_edit)
-            st.session_state["dictionaries"] = dictionaries
-            st.session_state["theme"] = new_name
-            st.session_state["dict_flash"] = f"Thème renommé : « {theme_edit} » → « {new_name} »."
-            st.session_state["dict_expander_open"] = True
             try:
-                DICT_REPO.save(dictionaries)
+                DICT_REPO.rename_theme(theme_edit, new_name)
+                _cache = get_tagging_cache()
+                _cache.invalidate(theme_edit)
+                _cache.invalidate(new_name)
+                st.session_state["theme"] = new_name
+                st.session_state["dict_flash"] = f"Thème renommé : « {theme_edit} » → « {new_name} »."
+                st.session_state["dict_expander_open"] = True
+                st.rerun()
+            except ThemeNotFound:
+                st.warning(
+                    f"Le thème « {theme_edit} » a été supprimé entre-temps. Rafraîchis la page."
+                )
+            except ThemeAlreadyExists:
+                st.warning(f"Un thème « {new_name} » a été créé entre-temps par un autre utilisateur.")
             except Exception as exc:
                 LOGGER.exception("Écriture dictionnaire impossible (renommage) : %s", exc)
                 st.warning(f"Impossible d'écrire le fichier dictionnaire ({exc}).")
-            st.rerun()
 
     # Étapes 2–4 + Sauvegarde
     st.markdown("**Étape 2 — Mots-clés du concept**")
@@ -661,18 +677,22 @@ with st.expander("Thèmes et dictionnaires", expanded=dict_expander_open):
         new_concept = [k.strip() for k in concept_text.splitlines() if k.strip()]
         new_up = [k.strip() for k in up_text.splitlines() if k.strip()]
         new_down = [k.strip() for k in down_text.splitlines() if k.strip()]
-        dictionaries[theme_edit] = {
+        new_theme = {
             "concept": new_concept,
             "context": current_theme_dict.get("context", []),
             "up": new_up,
             "down": new_down,
         }
-        st.session_state["dictionaries"] = dictionaries
         try:
-            DICT_REPO.save(dictionaries)
+            DICT_REPO.update_theme(theme_edit, new_theme)
+            get_tagging_cache().invalidate(theme_edit)
             st.success(
                 f"Dictionnaire « {theme_edit} » enregistré : "
                 f"{len(new_concept)} concept(s) · {len(new_up)} terme(s) UP · {len(new_down)} terme(s) DOWN."
+            )
+        except ThemeNotFound:
+            st.warning(
+                f"Le thème « {theme_edit} » a été supprimé entre-temps. Rafraîchis la page."
             )
         except Exception as exc:
             LOGGER.exception("Écriture dictionnaire impossible (enregistrement) : %s", exc)
@@ -703,17 +723,20 @@ with st.expander("Thèmes et dictionnaires", expanded=dict_expander_open):
                 type="primary" if confirmed else "secondary",
                 key=f"delete_btn_{theme_edit}",
             ):
-                del dictionaries[theme_edit]
-                st.session_state["dictionaries"] = dictionaries
-                st.session_state["theme"] = sorted(dictionaries.keys())[0]
-                st.session_state["dict_flash"] = f"Thème « {theme_edit} » supprimé."
-                st.session_state["dict_expander_open"] = True
                 try:
-                    DICT_REPO.save(dictionaries)
+                    new_state = DICT_REPO.delete_theme(theme_edit)
+                    get_tagging_cache().invalidate(theme_edit)
+                    remaining = sorted(new_state.keys())
+                    st.session_state["theme"] = remaining[0] if remaining else ""
+                    st.session_state["dict_flash"] = f"Thème « {theme_edit} » supprimé."
+                    st.session_state["dict_expander_open"] = True
+                    st.rerun()
+                except ThemeNotFound:
+                    st.warning(f"Le thème « {theme_edit} » a déjà été supprimé.")
+                    st.rerun()
                 except Exception as exc:
                     LOGGER.exception("Écriture dictionnaire impossible (suppression) : %s", exc)
                     st.warning(f"Impossible d'écrire le fichier dictionnaire ({exc}).")
-                st.rerun()
 
     with col_danger2:
         st.markdown("**Réinitialiser tous les dictionnaires**")
@@ -726,6 +749,7 @@ with st.expander("Thèmes et dictionnaires", expanded=dict_expander_open):
             st.session_state["theme"] = sorted(DEFAULT_DICTIONARIES.keys())[0]
             try:
                 DICT_REPO.save(st.session_state["dictionaries"])
+                get_tagging_cache().invalidate()  # tout vider
             except Exception as exc:
                 LOGGER.exception("Écriture dictionnaire impossible (reset) : %s", exc)
                 st.warning(f"Impossible d'écrire le fichier dictionnaire ({exc}).")
@@ -740,18 +764,10 @@ theme_dict = normalize_theme_dictionary(
     st.session_state["dictionaries"].get(theme, empty_theme_dictionary())
 )
 
-# Cache les keywords normalisés dans session_state pour éviter de relancer
-# unicodedata.normalize sur chaque terme à chaque rerun.
-# Clé = contenu brut du dictionnaire du thème actif.
-_kw_cache_key = (theme, tuple(theme_dict["concept"]), tuple(theme_dict["up"]), tuple(theme_dict["down"]))
-if st.session_state.get("_kw_cache_key") != _kw_cache_key:
-    st.session_state["_kw_cache_key"] = _kw_cache_key
-    st.session_state["_kw_cache"] = (
-        prepare_keywords(theme_dict["concept"]),
-        prepare_keywords(theme_dict["up"]),
-        prepare_keywords(theme_dict["down"]),
-    )
-concept_norm, up_norm, down_norm = st.session_state["_kw_cache"]
+# Préparation des keywords normalisés (rapide, pas de cache nécessaire)
+concept_norm = prepare_keywords(theme_dict["concept"])
+up_norm = prepare_keywords(theme_dict["up"])
+down_norm = prepare_keywords(theme_dict["down"])
 
 if not concept_norm:
     st.info(
@@ -760,32 +776,31 @@ if not concept_norm:
     )
     st.stop()
 
-tagging_cache = st.session_state.setdefault("_tagged_theme_cache", {})
-cache_payload = {
-    "data_signature": data_signature,
-    "theme": theme,
-    "concept": concept_norm,
-    "up": up_norm,
-    "down": down_norm,
-}
-tag_cache_key = json.dumps(cache_payload, ensure_ascii=False, sort_keys=True)
-
-if tag_cache_key not in tagging_cache:
-    try:
-        tagging_cache[tag_cache_key] = tag_dataframe(
+# Tagging — cache PROCESS-WIDE partagé entre toutes les sessions utilisateur
+TAGGING_CACHE = get_tagging_cache()
+try:
+    df_tagged = TAGGING_CACHE.get_or_compute(
+        theme=theme,
+        concept=tuple(concept_norm),
+        up=tuple(up_norm),
+        down=tuple(down_norm),
+        compute_fn=lambda: tag_dataframe(
             df_base,
             title_col=title_col,
             concept_norm=concept_norm,
             up_norm=up_norm,
             down_norm=down_norm,
             title_norm_col="_title_norm",
-        )
-    except Exception as exc:
-        stop_with_error_log("Erreur pendant le marquage des titres.", "tag_dataframe", exc)
-    while len(tagging_cache) > 2:
-        tagging_cache.pop(next(iter(tagging_cache)))
+        ),
+    )
+except Exception as exc:
+    stop_with_error_log("Erreur pendant le marquage des titres.", "tag_dataframe", exc)
 
-df_tagged = tagging_cache[tag_cache_key]
+# Clé stable utilisée par le cache d'agrégation aval
+tag_cache_key = json.dumps(
+    {"theme": theme, "concept": list(concept_norm), "up": list(up_norm), "down": list(down_norm)},
+    sort_keys=True,
+)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

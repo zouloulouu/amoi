@@ -7,7 +7,7 @@ import pandas as pd
 from fastapi import HTTPException, Request, status
 
 from ina_core.store import CompositeDictRepository, DataStore, Settings
-from ina_api.cache import TaggingCache
+from ina_core.cache import TaggingCache
 
 
 def get_settings(request: Request) -> Settings:

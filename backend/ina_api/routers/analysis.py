@@ -12,7 +12,7 @@ from ina_core import (
     tag_dataframe,
 )
 from ina_core.store import CompositeDictRepository
-from ina_api.cache import TaggingCache
+from ina_core.cache import TaggingCache
 from ina_api.deps import get_cache, get_df_base, get_dict_repo
 from ina_api.schemas import (
     AnalysisRequest,

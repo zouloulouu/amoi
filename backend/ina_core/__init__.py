@@ -26,6 +26,7 @@ from ina_core.coverage import (
     build_channel_stats,
     build_decade_distribution,
 )
+from ina_core.cache import TaggingCache
 
 __version__ = "0.1.0"
 
@@ -49,4 +50,5 @@ __all__ = [
     "periodize",
     "build_channel_stats",
     "build_decade_distribution",
+    "TaggingCache",
 ]

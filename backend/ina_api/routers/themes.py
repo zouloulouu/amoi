@@ -3,8 +3,12 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from ina_core.store import CompositeDictRepository
-from ina_api.cache import TaggingCache
+from ina_core.store import (
+    CompositeDictRepository,
+    ThemeAlreadyExists,
+    ThemeNotFound,
+)
+from ina_core.cache import TaggingCache
 from ina_api.deps import get_cache, get_dict_repo
 from ina_api.schemas import (
     ThemeCreateRequest,
@@ -44,20 +48,20 @@ def create_theme(
     repo: CompositeDictRepository = Depends(get_dict_repo),
     cache: TaggingCache = Depends(get_cache),
 ):
-    dictionaries = repo.load()
-    if payload.name in dictionaries:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT, f"Theme {payload.name!r} already exists"
-        )
-    dictionaries[payload.name] = {
+    new_theme = {
         "concept": payload.concept,
         "context": [],
         "up": payload.up,
         "down": payload.down,
     }
-    repo.save(dictionaries)
+    try:
+        repo.create_theme(payload.name, new_theme)
+    except ThemeAlreadyExists:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, f"Theme {payload.name!r} already exists"
+        )
     cache.invalidate(payload.name)
-    return ThemeDictionary(name=payload.name, **dictionaries[payload.name])
+    return ThemeDictionary(name=payload.name, **new_theme)
 
 
 @router.put("/{name}", response_model=ThemeDictionary)
@@ -67,17 +71,21 @@ def update_theme(
     repo: CompositeDictRepository = Depends(get_dict_repo),
     cache: TaggingCache = Depends(get_cache),
 ):
+    # We need the current theme to apply partial updates; re-read from disk.
     dictionaries = repo.load()
     if name not in dictionaries:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Theme {name!r} not found")
-    current = dictionaries[name]
+    current = dict(dictionaries[name])
     if payload.concept is not None:
         current["concept"] = payload.concept
     if payload.up is not None:
         current["up"] = payload.up
     if payload.down is not None:
         current["down"] = payload.down
-    repo.save(dictionaries)
+    try:
+        repo.update_theme(name, current)
+    except ThemeNotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Theme {name!r} not found")
     cache.invalidate(name)
     return ThemeDictionary(name=name, **current)
 
@@ -95,6 +103,8 @@ def delete_theme(
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, "Cannot delete the last theme"
         )
-    del dictionaries[name]
-    repo.save(dictionaries)
+    try:
+        repo.delete_theme(name)
+    except ThemeNotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Theme {name!r} not found")
     cache.invalidate(name)

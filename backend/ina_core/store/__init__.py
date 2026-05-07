@@ -5,6 +5,8 @@ from ina_core.store.dict_repo import (
     CompositeDictRepository,
     HuggingFaceRepository,
     LocalJsonRepository,
+    ThemeAlreadyExists,
+    ThemeNotFound,
 )
 
 __all__ = [
@@ -15,4 +17,6 @@ __all__ = [
     "LocalJsonRepository",
     "HuggingFaceRepository",
     "CompositeDictRepository",
+    "ThemeAlreadyExists",
+    "ThemeNotFound",
 ]

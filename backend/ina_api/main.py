@@ -17,7 +17,7 @@ from ina_core.store import (
     LocalJsonRepository,
     Settings,
 )
-from ina_api.cache import TaggingCache
+from ina_core.cache import TaggingCache
 from ina_api.routers import analysis, channels, export, health, metadata, themes
 
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from unittest.mock import patch
 
@@ -11,6 +12,8 @@ from ina_core.store.dict_repo import (
     CompositeDictRepository,
     HuggingFaceRepository,
     LocalJsonRepository,
+    ThemeAlreadyExists,
+    ThemeNotFound,
 )
 
 
@@ -57,6 +60,95 @@ def test_local_repo_save_is_atomic(tmp_path):
     repo.save({"theme": {"concept": ["x"]}})
     assert p.exists()
     assert not (tmp_path / "dict.json.tmp").exists()
+
+
+# ─── LocalJsonRepository — fine-grained atomic operations ──────────────────
+
+
+def test_create_theme_inserts(tmp_path):
+    repo = LocalJsonRepository(tmp_path / "dict.json")
+    repo.create_theme("inflation", {"concept": ["ipc"]})
+    assert "inflation" in repo.load()
+
+
+def test_create_theme_raises_when_exists(tmp_path):
+    repo = LocalJsonRepository(tmp_path / "dict.json")
+    repo.create_theme("inflation", {"concept": ["ipc"]})
+    with pytest.raises(ThemeAlreadyExists):
+        repo.create_theme("inflation", {"concept": ["x"]})
+
+
+def test_update_theme_replaces(tmp_path):
+    repo = LocalJsonRepository(tmp_path / "dict.json")
+    repo.create_theme("inflation", {"concept": ["ipc"]})
+    repo.update_theme("inflation", {"concept": ["new"]})
+    assert repo.load()["inflation"]["concept"] == ["new"]
+
+
+def test_update_theme_raises_when_absent(tmp_path):
+    repo = LocalJsonRepository(tmp_path / "dict.json")
+    with pytest.raises(ThemeNotFound):
+        repo.update_theme("ghost", {"concept": ["x"]})
+
+
+def test_upsert_theme_inserts_or_replaces(tmp_path):
+    repo = LocalJsonRepository(tmp_path / "dict.json")
+    repo.upsert_theme("a", {"concept": ["x"]})  # insert
+    repo.upsert_theme("a", {"concept": ["y"]})  # replace
+    assert repo.load()["a"]["concept"] == ["y"]
+
+
+def test_delete_theme_removes(tmp_path):
+    repo = LocalJsonRepository(tmp_path / "dict.json")
+    repo.create_theme("a", {"concept": ["x"]})
+    repo.delete_theme("a")
+    assert "a" not in repo.load()
+
+
+def test_delete_theme_raises_when_absent(tmp_path):
+    repo = LocalJsonRepository(tmp_path / "dict.json")
+    with pytest.raises(ThemeNotFound):
+        repo.delete_theme("ghost")
+
+
+def test_rename_theme(tmp_path):
+    repo = LocalJsonRepository(tmp_path / "dict.json")
+    repo.create_theme("old", {"concept": ["x"]})
+    repo.rename_theme("old", "new")
+    state = repo.load()
+    assert "old" not in state and "new" in state
+
+
+def test_rename_theme_raises_when_target_exists(tmp_path):
+    repo = LocalJsonRepository(tmp_path / "dict.json")
+    repo.create_theme("a", {"concept": ["x"]})
+    repo.create_theme("b", {"concept": ["y"]})
+    with pytest.raises(ThemeAlreadyExists):
+        repo.rename_theme("a", "b")
+
+
+def test_concurrent_creates_dont_lose_data(tmp_path):
+    """Two threads creating different themes must both succeed.
+
+    This is the core test: simulates Alice and Bob creating themes at the
+    same time. Without atomic read-modify-write, one would overwrite the
+    other (lost update). With it, both end up on disk.
+    """
+    repo = LocalJsonRepository(tmp_path / "dict.json")
+    barrier = threading.Barrier(2)
+
+    def _create(name):
+        barrier.wait()  # both threads enter at the same time
+        repo.create_theme(name, {"concept": [name]})
+
+    t1 = threading.Thread(target=_create, args=("alice_theme",))
+    t2 = threading.Thread(target=_create, args=("bob_theme",))
+    t1.start(); t2.start()
+    t1.join(); t2.join()
+
+    final = repo.load()
+    assert "alice_theme" in final
+    assert "bob_theme" in final
 
 
 # ─── HuggingFaceRepository ──────────────────────────────────────────────────

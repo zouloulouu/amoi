@@ -19,18 +19,31 @@ class DictRepository(Protocol):
     def save(self, dictionaries: dict) -> None: ...
 
 
+class ThemeAlreadyExists(Exception):
+    """Raised by create_theme when the theme name is already present on disk."""
+
+
+class ThemeNotFound(KeyError):
+    """Raised when an operation targets a non-existing theme."""
+
+
 class LocalJsonRepository:
     """Atomic local JSON file storage for the dictionaries.
 
-    Uses tmp+os.replace for atomic writes. A threading.Lock protects
-    against concurrent writes within a single process.
+    The fine-grained operations (`create_theme`, `update_theme`, `upsert_theme`,
+    `delete_theme`, `rename_theme`) all do **read → modify → write under the
+    same lock**, which prevents lost updates between two concurrent editors
+    in the same process. Cross-process safety would require a file lock
+    (e.g. via the `filelock` package) — out of scope here.
     """
 
     def __init__(self, path: Path):
         self._path = Path(path)
         self._lock = threading.Lock()
 
-    def load(self) -> dict:
+    # ─── Internal helpers (lock NOT acquired) ──────────────────────────────
+
+    def _read_unlocked(self) -> dict:
         if not self._path.exists():
             return {}
         try:
@@ -42,15 +55,80 @@ class LocalJsonRepository:
             logger.exception("Local dict load failed: %s", exc)
             return {}
 
-    def save(self, dictionaries: dict) -> None:
+    def _write_unlocked(self, dictionaries: dict) -> None:
         normalized = normalize_dictionaries_payload(dictionaries)
         tmp = self._path.with_name(self._path.name + ".tmp")
+        tmp.write_text(
+            json.dumps(normalized, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        os.replace(tmp, self._path)
+
+    # ─── Coarse API (compat) ───────────────────────────────────────────────
+
+    def load(self) -> dict:
         with self._lock:
-            tmp.write_text(
-                json.dumps(normalized, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            os.replace(tmp, self._path)
+            return self._read_unlocked()
+
+    def save(self, dictionaries: dict) -> None:
+        """Replace the entire file. Use only for intentional bulk overwrites
+        (e.g. reset-to-defaults). For single-theme changes prefer the
+        fine-grained methods below to avoid lost updates.
+        """
+        with self._lock:
+            self._write_unlocked(dictionaries)
+
+    # ─── Fine-grained atomic operations ────────────────────────────────────
+
+    def create_theme(self, name: str, theme: dict) -> dict:
+        """Insert a new theme. Raises ThemeAlreadyExists if name is taken."""
+        with self._lock:
+            current = self._read_unlocked()
+            if name in current:
+                raise ThemeAlreadyExists(name)
+            current[name] = theme
+            self._write_unlocked(current)
+            return current
+
+    def update_theme(self, name: str, theme: dict) -> dict:
+        """Replace an existing theme. Raises ThemeNotFound if absent."""
+        with self._lock:
+            current = self._read_unlocked()
+            if name not in current:
+                raise ThemeNotFound(name)
+            current[name] = theme
+            self._write_unlocked(current)
+            return current
+
+    def upsert_theme(self, name: str, theme: dict) -> dict:
+        """Insert or replace, no error either way."""
+        with self._lock:
+            current = self._read_unlocked()
+            current[name] = theme
+            self._write_unlocked(current)
+            return current
+
+    def delete_theme(self, name: str) -> dict:
+        """Remove a theme. Raises ThemeNotFound if absent."""
+        with self._lock:
+            current = self._read_unlocked()
+            if name not in current:
+                raise ThemeNotFound(name)
+            del current[name]
+            self._write_unlocked(current)
+            return current
+
+    def rename_theme(self, old: str, new: str) -> dict:
+        """Rename a theme. Raises ThemeNotFound or ThemeAlreadyExists."""
+        with self._lock:
+            current = self._read_unlocked()
+            if old not in current:
+                raise ThemeNotFound(old)
+            if new in current and new != old:
+                raise ThemeAlreadyExists(new)
+            current[new] = current.pop(old)
+            self._write_unlocked(current)
+            return current
 
 
 class HuggingFaceRepository:
@@ -99,8 +177,8 @@ class CompositeDictRepository:
     """Local JSON as source of truth + optional async HF mirror.
 
     Reads come from local first; if empty, fall back to HF (bootstrap case).
-    Writes go synchronously to local and are mirrored to HF in a background
-    daemon thread — failures are logged but do not block the caller.
+    All write methods (save + the fine-grained ones) are synchronous on the
+    local primary and mirrored to HF in a background daemon thread.
     """
 
     def __init__(
@@ -120,15 +198,42 @@ class CompositeDictRepository:
         return {}
 
     def save(self, dictionaries: dict) -> None:
-        # Source of truth — must be synchronous and atomic.
         self._primary.save(dictionaries)
-        # Best-effort mirror.
-        if self._mirror is not None:
-            threading.Thread(
-                target=self._safe_mirror_save,
-                args=(dictionaries,),
-                daemon=True,
-            ).start()
+        self._mirror_async(dictionaries)
+
+    def create_theme(self, name: str, theme: dict) -> dict:
+        new_state = self._primary.create_theme(name, theme)
+        self._mirror_async(new_state)
+        return new_state
+
+    def update_theme(self, name: str, theme: dict) -> dict:
+        new_state = self._primary.update_theme(name, theme)
+        self._mirror_async(new_state)
+        return new_state
+
+    def upsert_theme(self, name: str, theme: dict) -> dict:
+        new_state = self._primary.upsert_theme(name, theme)
+        self._mirror_async(new_state)
+        return new_state
+
+    def delete_theme(self, name: str) -> dict:
+        new_state = self._primary.delete_theme(name)
+        self._mirror_async(new_state)
+        return new_state
+
+    def rename_theme(self, old: str, new: str) -> dict:
+        new_state = self._primary.rename_theme(old, new)
+        self._mirror_async(new_state)
+        return new_state
+
+    def _mirror_async(self, state: dict) -> None:
+        if self._mirror is None:
+            return
+        threading.Thread(
+            target=self._safe_mirror_save,
+            args=(state,),
+            daemon=True,
+        ).start()
 
     def _safe_mirror_save(self, dictionaries: dict) -> None:
         try:
