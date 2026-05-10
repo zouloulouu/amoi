@@ -53,11 +53,15 @@ export async function apiFetch<T>(
   });
 
   if (!response.ok) {
-    let detail: unknown;
+    // Read the body once as text, then attempt to parse it as JSON.
+    // Calling `.json()` then `.text()` on the same Response throws
+    // "Body is unusable: Body has already been read".
+    const rawText = await response.text();
+    let detail: unknown = rawText;
     try {
-      detail = await response.json();
+      detail = JSON.parse(rawText);
     } catch {
-      detail = await response.text();
+      // Body wasn't JSON; keep the raw text in detail.
     }
 
     const message =
