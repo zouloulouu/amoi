@@ -34,6 +34,7 @@ from ina_core import (
     empty_theme_dictionary,
     normalize_theme_dictionary,
     prepare_keywords,
+    prewarm_themes_async,
     tag_dataframe,
 )
 from ina_core.store import (
@@ -41,6 +42,7 @@ from ina_core.store import (
     CompositeDictRepository,
     DataStore,
     HuggingFaceRepository,
+    LocalDiskPersistence,
     LocalJsonRepository,
     Settings,
     ThemeAlreadyExists,
@@ -125,7 +127,8 @@ SETTINGS = Settings(
     project_root=Path.cwd(),
 )
 
-DATA_STORE = DataStore(SETTINGS)
+PERSISTENCE = LocalDiskPersistence(SETTINGS.cache_dir)
+DATA_STORE = DataStore(SETTINGS, persistence=PERSISTENCE)
 
 DICT_REPO = CompositeDictRepository(
     primary=LocalJsonRepository(SETTINGS.dictionary_path),
@@ -153,10 +156,29 @@ def load_corpus() -> Tuple[pd.DataFrame, List[str], str]:
 def get_tagging_cache() -> TaggingCache:
     """Process-wide tagging cache, shared across all user sessions.
 
+    Two layers:
+    - in-memory LRU (maxsize=16, since prewarming populates ~11 themes)
+    - on-disk parquet cache survives process restarts and warm boots fast
+
     Without this, each session_state would hold its own tagged DataFrame
-    copy → mémoire ~150 Mo × N_users × N_themes_consultes.
+    copy → mémoire ~150 Mo × N_users × N_themes_consultés.
     """
-    return TaggingCache(maxsize=4)
+    return TaggingCache(maxsize=16, persistence=PERSISTENCE)
+
+
+@st.cache_resource
+def _prewarm_once(_corpus_token: str, _dict_token: str) -> bool:
+    """Tag every theme in the background once per (corpus × dictionary) signature.
+
+    Returns True. The two underscore-prefixed args are not used directly; they
+    serve as Streamlit cache keys so the prewarm is re-launched if the corpus
+    or the dictionaries change.
+    """
+    df = load_corpus()[0]
+    dictionaries = DICT_REPO.load()
+    if not df.empty and dictionaries:
+        prewarm_themes_async(get_tagging_cache(), df, dictionaries)
+    return True
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -239,6 +261,16 @@ if df_base.empty:
 _loaded = DICT_REPO.load()
 dictionaries = _loaded if _loaded else clone_dictionaries(DEFAULT_DICTIONARIES)
 st.session_state["dictionaries"] = dictionaries
+
+# Pre-warming asynchrone du tagging cache pour TOUS les thèmes connus.
+# Token corpus = source + nb lignes + date max ; token dico = nb thèmes + somme
+# des longueurs de listes. Peu probable de collisionner et stable entre reruns.
+_corpus_token = f"{load_source}:{len(df_base)}:{df_base['_date'].max():%Y%m%d}"
+_dict_token = "|".join(
+    f"{name}:{len(payload.get('concept', []))}:{len(payload.get('up', []))}:{len(payload.get('down', []))}"
+    for name, payload in sorted(dictionaries.items())
+)
+_prewarm_once(_corpus_token, _dict_token)
 
 title_col = "title" if "title" in df_base.columns else None
 has_source_channel = "_channel" in df_base.columns

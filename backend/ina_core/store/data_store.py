@@ -1,4 +1,4 @@
-"""Corpus loading: local snapshot first, HuggingFace fallback."""
+"""Corpus loading: disk cache → local snapshot → HuggingFace."""
 from __future__ import annotations
 
 import io
@@ -11,6 +11,7 @@ import pandas as pd
 import requests
 
 from ina_core.store.config import Settings
+from ina_core.store.persistence import LocalDiskPersistence
 
 logger = logging.getLogger("ina_core.store.data")
 
@@ -32,30 +33,56 @@ class DataStore:
     @st.cache_resource).
     """
 
-    def __init__(self, settings: Settings):
+    def __init__(
+        self,
+        settings: Settings,
+        persistence: Optional[LocalDiskPersistence] = None,
+    ):
         self._settings = settings
+        self._persistence = persistence
 
     # ─── Public API ─────────────────────────────────────────────────────────
 
     def load(self, prefer: Literal["local", "hf", "auto"] = "auto") -> Tuple[pd.DataFrame, List[str]]:
         """Load the corpus. Returns (df, issues).
 
-        - "local": read from data/clean/CURRENT only
+        - "local": read from data/clean/CURRENT only (with disk cache)
         - "hf": fetch from HuggingFace only
         - "auto": local first, fall back to HF if local is empty / unavailable
         """
         if prefer == "local":
-            return self._load_local()
+            return self._load_local_cached()
         if prefer == "hf":
             return self._load_hf()
 
-        df, issues = self._load_local()
+        df, issues = self._load_local_cached()
         if not df.empty:
             return df, issues
 
         issues.append("Cache local indisponible — bascule sur HuggingFace.")
         df_hf, hf_issues = self._load_hf()
         return df_hf, issues + hf_issues
+
+    def _local_snapshot_token(self) -> Optional[str]:
+        """Return the snapshot version string (content of CURRENT), or None."""
+        pointer = self._settings.current_pointer_file
+        if not pointer.exists():
+            return None
+        token = pointer.read_text(encoding="utf-8").strip()
+        return token or None
+
+    def _load_local_cached(self) -> Tuple[pd.DataFrame, List[str]]:
+        """Local snapshot load with on-disk df_base cache (feather)."""
+        token = self._local_snapshot_token()
+        if token and self._persistence is not None:
+            cached = self._persistence.read_corpus(token)
+            if cached is not None and not cached.empty:
+                return cached, []
+
+        df, issues = self._load_local()
+        if self._persistence is not None and token and not df.empty:
+            self._persistence.write_corpus(df, token)
+        return df, issues
 
     def metadata(self, df: pd.DataFrame) -> dict:
         if df.empty:

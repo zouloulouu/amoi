@@ -40,3 +40,8 @@ class Settings:
     @property
     def dictionary_path(self) -> Path:
         return self.project_root / "dictionaries.json"
+
+    @property
+    def cache_dir(self) -> Path:
+        """Disk-cache root for df_base and tagged dataframes (gitignored)."""
+        return self.project_root / "data" / "cache"

@@ -27,6 +27,7 @@ from ina_core.coverage import (
     build_decade_distribution,
 )
 from ina_core.cache import TaggingCache
+from ina_core.prewarm import prewarm_themes_async, prewarm_themes_blocking
 
 __version__ = "0.1.0"
 
@@ -51,4 +52,6 @@ __all__ = [
     "build_channel_stats",
     "build_decade_distribution",
     "TaggingCache",
+    "prewarm_themes_async",
+    "prewarm_themes_blocking",
 ]

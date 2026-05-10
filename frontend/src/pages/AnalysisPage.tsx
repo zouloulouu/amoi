@@ -9,6 +9,7 @@ import { useMetadata } from "../api/queries/useMetadata";
 import { useThemes } from "../api/queries/useThemes";
 import type { AnalysisRequest } from "../api/types";
 import { AnalysisCharts } from "../components/charts/AnalysisCharts";
+import { AnalysisSkeleton } from "../components/analysis/AnalysisSkeleton";
 import { FilterBar } from "../components/filters/FilterBar";
 import { KpiCards } from "../components/kpi/KpiCards";
 import { AnalysisTables } from "../components/tables/AnalysisTables";
@@ -142,11 +143,7 @@ export function AnalysisPage() {
         </Alert>
       ) : null}
 
-      {analysis.isPending ? (
-        <Alert color="blue" title="Analyse en cours">
-          Le calcul peut prendre quelques secondes sur la plage complete du corpus.
-        </Alert>
-      ) : null}
+      {analysis.isPending ? <AnalysisSkeleton /> : null}
 
       {exportError ? (
         <Alert color="red" title="Export impossible">

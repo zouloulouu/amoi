@@ -8,6 +8,7 @@ from ina_core.store.dict_repo import (
     ThemeAlreadyExists,
     ThemeNotFound,
 )
+from ina_core.store.persistence import LocalDiskPersistence
 
 __all__ = [
     "DEFAULT_HF_PARQUET_FILES",
@@ -17,6 +18,7 @@ __all__ = [
     "LocalJsonRepository",
     "HuggingFaceRepository",
     "CompositeDictRepository",
+    "LocalDiskPersistence",
     "ThemeAlreadyExists",
     "ThemeNotFound",
 ]

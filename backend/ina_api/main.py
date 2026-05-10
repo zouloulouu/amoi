@@ -14,10 +14,12 @@ from ina_core.store import (
     CompositeDictRepository,
     DataStore,
     HuggingFaceRepository,
+    LocalDiskPersistence,
     LocalJsonRepository,
     Settings,
 )
 from ina_core.cache import TaggingCache
+from ina_core.prewarm import prewarm_themes_async
 from ina_api.routers import analysis, channels, export, health, metadata, themes
 
 
@@ -43,7 +45,8 @@ async def lifespan(app: FastAPI):
         project_root=project_root,
     )
 
-    data_store = DataStore(settings)
+    persistence = LocalDiskPersistence(settings.cache_dir)
+    data_store = DataStore(settings, persistence=persistence)
     dict_repo = CompositeDictRepository(
         primary=LocalJsonRepository(settings.dictionary_path),
         mirror=(
@@ -55,7 +58,8 @@ async def lifespan(app: FastAPI):
     app.state.settings = settings
     app.state.data_store = data_store
     app.state.dict_repo = dict_repo
-    app.state.cache = TaggingCache()
+    # Bigger cache (was 4) since prewarming populates many themes at boot.
+    app.state.cache = TaggingCache(maxsize=16, persistence=persistence)
 
     logger.info("Loading corpus...")
     df, issues = data_store.load(prefer="auto")
@@ -66,6 +70,15 @@ async def lifespan(app: FastAPI):
         "Corpus loaded: %d rows, source=%s, %d issue(s)",
         len(df), app.state.load_source, len(issues),
     )
+
+    # Background prewarming: tag every known theme so the first /analysis
+    # call is a cache hit (in-memory or disk). Daemon thread → never blocks
+    # shutdown.
+    if not df.empty:
+        dictionaries = dict_repo.load()
+        if dictionaries:
+            logger.info("Launching background prewarm for %d theme(s)...", len(dictionaries))
+            prewarm_themes_async(app.state.cache, df, dictionaries)
 
     yield
     logger.info("Shutting down")
