@@ -13,6 +13,7 @@ from ina_api.deps import get_cache, get_dict_repo
 from ina_api.schemas import (
     ThemeCreateRequest,
     ThemeDictionary,
+    ThemeRenameRequest,
     ThemeSummary,
     ThemeUpdateRequest,
 )
@@ -88,6 +89,29 @@ def update_theme(
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Theme {name!r} not found")
     cache.invalidate(name)
     return ThemeDictionary(name=name, **current)
+
+
+@router.put("/{name}/rename", response_model=ThemeDictionary)
+def rename_theme(
+    name: str,
+    payload: ThemeRenameRequest,
+    repo: CompositeDictRepository = Depends(get_dict_repo),
+    cache: TaggingCache = Depends(get_cache),
+):
+    dictionaries = repo.load()
+    if name not in dictionaries:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Theme {name!r} not found")
+    try:
+        repo.rename_theme(name, payload.new_name)
+    except ThemeNotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Theme {name!r} not found")
+    except ThemeAlreadyExists:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, f"Theme {payload.new_name!r} already exists"
+        )
+    cache.invalidate(name)
+    cache.invalidate(payload.new_name)
+    return ThemeDictionary(name=payload.new_name, **dictionaries[name])
 
 
 @router.delete("/{name}", status_code=status.HTTP_204_NO_CONTENT)

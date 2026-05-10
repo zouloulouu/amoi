@@ -56,7 +56,6 @@
       "se stabilise"
     ]
   },
-
   "emploi": {
     "concept": [
       "creations d emplois",
@@ -110,7 +109,6 @@
       "effondrement"
     ]
   },
-
   "inflation": {
     "concept": [
       "inflation",
@@ -174,57 +172,210 @@
       "déflation"
     ]
   },
-
   "croissance": {
     "concept": [
       "croissance economique",
       "croissance économique",
+      "croissance",
       "taux de croissance",
+      "rythme de croissance",
+      "trajectoire de croissance",
+      "perspectives de croissance",
+      "prévisions de croissance",
+      "previsions de croissance",
+      "prévision de croissance",
+      "prevision de croissance",
+      "objectif de croissance",
+      "moteur de croissance",
+      "relais de croissance",
       "pib",
+      "PIB",
       "produit interieur brut",
       "produit intérieur brut",
+      "produit national brut",
+      "pnb",
+      "richesse nationale",
+      "richesse produite",
       "pib par habitant",
+      "PIB par habitant",
+      "croissance par habitant",
+      "niveau de vie",
       "activite economique",
       "activité économique",
-      "reprise economique",
-      "reprise économique",
-      "expansion economique",
-      "expansion économique"
+      "niveau d'activité",
+      "niveau d’activite",
+      "niveau d’activité",
+      "conjoncture",
+      "conjoncture economique",
+      "conjoncture économique",
+      "cycle economique",
+      "cycle économique"
     ],
     "context": [],
     "up": [
       "hausse",
       "en hausse",
+      "a la hausse",
+      "à la hausse",
       "augmente",
+      "augmentent",
       "augmentation",
+      "en augmentation",
+      "progresse",
+      "progressent",
+      "progression",
+      "en progression",
+      "avance",
+      "avancée",
+      "gagne",
+      "gagnent",
+      "gain",
+      "croît",
+      "croit",
+      "croissance positive",
       "accelere",
       "accélère",
       "s accelere",
       "s'accélère",
+      "acceleration",
+      "accélération",
+      "se renforce",
+      "renforcement",
+      "s intensifie",
+      "s'intensifie",
       "rebond",
+      "rebondit",
+      "rebondissent",
       "reprise",
-      "progresse",
-      "progression",
-      "record"
+      "reprend",
+      "redemarre",
+      "redémarre",
+      "redressement",
+      "se redresse",
+      "relance",
+      "embellie",
+      "essor",
+      "expansion",
+      "en expansion",
+      "dynamisme",
+      "dynamique",
+      "vigoureux",
+      "vigoureuse",
+      "robuste",
+      "solide",
+      "soutenu",
+      "soutenue",
+      "résilient",
+      "resilient",
+      "résiliente",
+      "resiliente",
+      "porteur",
+      "porteuse",
+      "record",
+      "niveau record",
+      "plus haut",
+      "pic",
+      "sommet",
+      "performance",
+      "bonne performance",
+      "surperformance",
+      "tiré par",
+      "tire par",
+      "porté par",
+      "porte par",
+      "soutenu par",
+      "stimulé par",
+      "stimule par",
+      "dopé par",
+      "dope par",
+      "favorisé par",
+      "favorise par"
     ],
     "down": [
       "baisse",
       "en baisse",
-      "recule",
-      "recul",
+      "a la baisse",
+      "à la baisse",
       "diminue",
+      "diminuent",
       "diminution",
+      "recul",
+      "recule",
+      "reculent",
+      "en recul",
+      "baisse de régime",
+      "perte de vitesse",
       "ralentit",
+      "ralentissent",
       "ralentissement",
-      "chute",
+      "décélère",
+      "decelere",
+      "décélération",
+      "deceleration",
+      "s essouffle",
+      "s'essouffle",
+      "essoufflement",
+      "s'affaiblit",
+      "s affaiblit",
+      "affaiblissement",
+      "faiblit",
+      "faiblesse",
+      "stagne",
+      "stagnation",
+      "atonie",
+      "atone",
+      "morose",
+      "morosité",
+      "morosite",
+      "fragile",
+      "fragilité",
+      "fragilite",
+      "en berne",
+      "dégradé",
+      "degrade",
+      "dégradation",
+      "degradation",
       "contraction",
+      "se contracte",
+      "contracté",
+      "contracte",
+      "chute",
+      "chute libre",
       "effondrement",
+      "s effondre",
+      "s'effondre",
+      "plonge",
+      "plongeon",
+      "dépression",
+      "depression",
       "recession",
       "récession",
-      "stagflation"
+      "entrée en récession",
+      "entree en recession",
+      "risque de récession",
+      "risque de recession",
+      "crise économique",
+      "crise economique",
+      "crise",
+      "marasme",
+      "trou d'air",
+      "trou d’air",
+      "stagflation",
+      "freiné par",
+      "freine par",
+      "pénalisé par",
+      "penalise par",
+      "plombé par",
+      "plombe par",
+      "affecté par",
+      "affecte par",
+      "fragilisé par",
+      "fragilise par",
+      "handicapé par",
+      "handicape par",
+      "sous pression"
     ]
   },
-
   "pouvoir_achat": {
     "concept": [
       "pouvoir d achat",
@@ -275,7 +426,6 @@
       "perte de pouvoir d'achat"
     ]
   },
-
   "dette_deficit": {
     "concept": [
       "dette publique",
@@ -357,7 +507,6 @@
       "stabilisation"
     ]
   },
-
   "fiscalite": {
     "concept": [
       "impots",
@@ -415,7 +564,6 @@
       "défiscalise"
     ]
   },
-
   "salaires": {
     "concept": [
       "salaires",
@@ -472,7 +620,6 @@
       "compression"
     ]
   },
-
   "immobilier": {
     "concept": [
       "prix de l immobilier",
@@ -533,7 +680,6 @@
       "ralentissement"
     ]
   },
-
   "energie": {
     "concept": [
       "prix de l energie",
@@ -596,7 +742,6 @@
       "allègement"
     ]
   },
-
   "taux_interet": {
     "concept": [
       "taux d interet",

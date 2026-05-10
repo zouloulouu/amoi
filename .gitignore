@@ -19,6 +19,15 @@ reports/
 .coverage
 .coverage.*
 
+# Frontend tooling artifacts
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+frontend/test-results/
+frontend/playwright-report/
+frontend/vite.config.js
+frontend/vite.config.d.ts
+
 # R session files
 .RData
 .Rhistory

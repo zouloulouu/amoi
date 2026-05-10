@@ -138,6 +138,21 @@ def test_update_theme_replaces_concept(client):
     assert r.json()["concept"] == ["ipc"]
 
 
+def test_rename_theme_then_retrieve(client):
+    client.post("/themes", json={"name": "chomage", "concept": ["chomage"]})
+    r = client.put("/themes/chomage/rename", json={"new_name": "emploi"})
+    assert r.status_code == 200
+    assert r.json()["name"] == "emploi"
+    assert client.get("/themes/chomage").status_code == 404
+    assert client.get("/themes/emploi").status_code == 200
+
+
+def test_rename_theme_conflict_returns_409(client):
+    client.post("/themes", json={"name": "chomage"})
+    r = client.put("/themes/chomage/rename", json={"new_name": "inflation"})
+    assert r.status_code == 409
+
+
 def test_delete_theme_blocks_when_only_one(client):
     r = client.delete("/themes/inflation")
     assert r.status_code == 400  # cannot delete the last theme
@@ -181,6 +196,8 @@ def test_analysis_basic_flow(client):
     assert body["kpi"]["n_total"] > 0
     assert isinstance(body["series"], list)
     assert isinstance(body["top_channels"], list)
+    assert isinstance(body["preview_titles"], list)
+    assert {"date", "title", "occ_concept", "direction_label"} <= set(body["preview_titles"][0])
     assert len(body["descriptive"]) == 12
 
 

@@ -58,6 +58,10 @@ class ThemeUpdateRequest(BaseModel):
     down: Optional[List[str]] = None
 
 
+class ThemeRenameRequest(BaseModel):
+    new_name: str = Field(pattern=r"^[a-z0-9_\-]+$", min_length=1, max_length=64)
+
+
 # ─── Analysis ───────────────────────────────────────────────────────────────
 
 
@@ -134,11 +138,24 @@ class DescriptiveRow(BaseModel):
     valeur: Any
 
 
+class PreviewTitle(BaseModel):
+    date: date
+    channel: Optional[str] = None
+    title: str
+    occ_concept: int
+    occ_up: int
+    occ_down: int
+    direction: int
+    direction_label: Literal["flat", "up", "down", "ambiguous"]
+    source_file: Optional[str] = None
+
+
 class AnalysisResponse(BaseModel):
     kpi: KpiResponse
     series: List[TimeSeriesPoint]
     top_channels: List[TopChannel]
     descriptive: List[DescriptiveRow]
+    preview_titles: List[PreviewTitle]
     request: AnalysisRequest
 
 

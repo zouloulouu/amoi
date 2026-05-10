@@ -5,6 +5,10 @@ import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from ina_core import (
+    DIRECTION_AMBIGUOUS,
+    DIRECTION_DOWN,
+    DIRECTION_FLAT,
+    DIRECTION_UP,
     aggregate_by_period,
     build_descriptive_table,
     build_top_channels,
@@ -20,11 +24,20 @@ from ina_api.schemas import (
     DescriptiveRow,
     FREQUENCY_LABEL,
     KpiResponse,
+    PreviewTitle,
     TimeSeriesPoint,
     TopChannel,
 )
 
 router = APIRouter(tags=["analysis"])
+
+
+DIRECTION_LABELS = {
+    DIRECTION_FLAT: "flat",
+    DIRECTION_UP: "up",
+    DIRECTION_DOWN: "down",
+    DIRECTION_AMBIGUOUS: "ambiguous",
+}
 
 
 @router.post("/analysis", response_model=AnalysisResponse)
@@ -139,10 +152,48 @@ def analyze(
         for _, row in desc.iterrows()
     ]
 
+    preview_cols = [
+        c
+        for c in [
+            "_date",
+            "_channel",
+            "title",
+            "occ_concept",
+            "occ_up",
+            "occ_down",
+            "direction",
+            "source_file",
+        ]
+        if c in df_filtered.columns
+    ]
+    preview_df = (
+        df_filtered[df_filtered["is_match"] == 1]
+        .sort_values(["occ_concept", "_date"], ascending=[False, False])
+        .head(300)[preview_cols]
+        .copy()
+    )
+    preview_titles = [
+        PreviewTitle(
+            date=row["_date"].date(),
+            channel=row.get("_channel"),
+            title=str(row.get("title", "")),
+            occ_concept=int(row.get("occ_concept", 0)),
+            occ_up=int(row.get("occ_up", 0)),
+            occ_down=int(row.get("occ_down", 0)),
+            direction=int(row.get("direction", DIRECTION_FLAT)),
+            direction_label=DIRECTION_LABELS.get(
+                int(row.get("direction", DIRECTION_FLAT)), "flat"
+            ),
+            source_file=row.get("source_file"),
+        )
+        for _, row in preview_df.iterrows()
+    ]
+
     return AnalysisResponse(
         kpi=kpi,
         series=series,
         top_channels=top_channels,
         descriptive=descriptive,
+        preview_titles=preview_titles,
         request=payload,
     )
