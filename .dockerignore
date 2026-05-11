@@ -1,0 +1,69 @@
+# Files that must NOT be copied into the Docker image.
+# Mirrors .gitignore plus dev-only / heavy artifacts.
+
+# Python build / cache
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/*.egg-info/
+.coverage
+.coverage.*
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Frontend (deployed separately on Vercel)
+frontend/
+
+# Local dev data we don't want baked into the image
+data/raw/
+data/slim/
+data/gold/
+data/inflation/
+data/*.xlsx
+data/clean/v*/         # versioned snapshots — mount the active one as a volume
+logs/
+reports/
+data/cache/            # rebuilt at runtime from mounted volumes
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+.RData
+.Rhistory
+
+# Claude Code local state
+.claude/
+
+# Secrets — never bake in
+.env
+.env.*
+.streamlit/secrets.toml
+
+# Docs not needed at runtime
+docs/figures/
+
+# Git internals
+.git/
+.gitignore
+.gitattributes
+
+# R scripts — irrelevant to the Python container
+*.R
+*.Rproj
+
+# CSV exports at root
+*.csv
+
+# Monolith Streamlit app — runs separately on Streamlit Cloud
+app.py
+
+# Build/CI files for other tooling
+playwright-report/
+test-results/
+
+# Backend test files — run them in CI, not in production image
+backend/tests/

@@ -35,6 +35,14 @@ frontend/vite.config.d.ts
 # Local Claude Code settings
 .claude/
 
+# Production secrets (never commit) — keep .env.example as the template.
+# .env.production is committed: it only contains public build-time config
+# for Vite (no secrets — Vite inlines anything VITE_* in the bundle anyway).
+.env
+.env.*
+!.env.example
+!frontend/.env.production
+
 # Keep only versioned clean snapshots in Git.
 data/*.parquet
 data/raw/**

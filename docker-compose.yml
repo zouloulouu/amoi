@@ -1,0 +1,64 @@
+# Production-grade Docker Compose for the ina_api FastAPI backend.
+#
+# Local dev:        docker compose up --build
+# Prod (VPS):       docker compose up -d
+# Logs:             docker compose logs -f api
+# Restart:          docker compose restart api
+# Pull + redeploy:  git pull && docker compose up -d --build
+#
+# Frontend is deployed separately on Vercel — this file does NOT serve it.
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: ina-api:local
+    container_name: ina-api
+    restart: unless-stopped
+
+    # Bind only to localhost; nginx (on the host) reverse-proxies to it.
+    # In dev, change to "8000:8000" to expose on all interfaces.
+    ports:
+      - "127.0.0.1:8000:8000"
+
+    environment:
+      # HF_TOKEN, INA_CORS_ORIGINS, INA_HF_REPO_ID are read from .env (see env_file).
+      INA_PROJECT_ROOT: /app
+
+    env_file:
+      - path: .env
+        required: false
+
+    volumes:
+      # Source of truth for dictionaries — atomic writes via tmp+replace.
+      - ./dictionaries.json:/app/dictionaries.json
+      # Clean snapshot used as the corpus source when HF is unavailable.
+      # Read-only mount: the container should never write into data/clean.
+      - ./data/clean:/app/data/clean:ro
+      # Disk cache (df_base.feather + tagged/*.parquet). Container writes here.
+      - ./data/cache:/app/data/cache
+      # Logs out of the container so they survive restarts.
+      - ./logs:/app/logs
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
+
+    # Resource limits — adjust to your VPS plan.
+    deploy:
+      resources:
+        limits:
+          memory: 1500M
+        reservations:
+          memory: 512M
+
+    # Don't let logs grow unbounded.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
