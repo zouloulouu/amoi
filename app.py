@@ -152,28 +152,56 @@ def load_corpus() -> Tuple[pd.DataFrame, List[str], str]:
     return df, issues, source
 
 
+def _on_streamlit_cloud() -> bool:
+    """Detection heuristique d'execution sur Streamlit Cloud.
+
+    Streamlit Cloud monte le code sous /mount/src/<app>/ et limite a 1 Go RAM
+    en free tier. Le prewarm de 11 themes en background depasse cette limite
+    et fait killer le process par l'OS, sans log explicite. On detecte donc
+    l'environnement pour adapter le comportement.
+    """
+    return (
+        "/mount/src" in str(Path.cwd())
+        or os.environ.get("INA_FORCE_CLOUD_MODE", "").lower() in ("1", "true")
+    )
+
+
+IS_STREAMLIT_CLOUD = _on_streamlit_cloud()
+
+
 @st.cache_resource
 def get_tagging_cache() -> TaggingCache:
     """Process-wide tagging cache, shared across all user sessions.
 
     Two layers:
-    - in-memory LRU (maxsize=16, since prewarming populates ~11 themes)
+    - in-memory LRU (Streamlit Cloud: maxsize=2 — RAM 1 Go limit;
+      ailleurs: maxsize=16)
     - on-disk parquet cache survives process restarts and warm boots fast
 
-    Without this, each session_state would hold its own tagged DataFrame
-    copy → mémoire ~150 Mo × N_users × N_themes_consultés.
+    Sans le cache, chaque session_state contiendrait sa propre copie tagged
+    → memoire ~150 Mo × N_users × N_themes_consultés.
     """
-    return TaggingCache(maxsize=16, persistence=PERSISTENCE)
+    # Streamlit Cloud free = 1 Go RAM. Garder plus de 2 df_tagged en memoire
+    # depasse la limite et le process est kill par l'OS.
+    maxsize = 2 if IS_STREAMLIT_CLOUD else 16
+    return TaggingCache(maxsize=maxsize, persistence=PERSISTENCE)
 
 
 @st.cache_resource
 def _prewarm_once(_corpus_token: str, _dict_token: str) -> bool:
     """Tag every theme in the background once per (corpus × dictionary) signature.
 
+    SKIPPED on Streamlit Cloud: tagging 11 themes in background blows the
+    1 GB RAM cap. Users see a first-time delay on each theme but the app
+    survives. On a real server (VPS, Docker), prewarming runs as designed.
+
     Returns True. The two underscore-prefixed args are not used directly; they
     serve as Streamlit cache keys so the prewarm is re-launched if the corpus
     or the dictionaries change.
     """
+    if IS_STREAMLIT_CLOUD:
+        LOGGER.info("Streamlit Cloud detected → prewarm desactive (RAM 1 Go)")
+        return False
     df = load_corpus()[0]
     dictionaries = DICT_REPO.load()
     if not df.empty and dictionaries:
