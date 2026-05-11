@@ -792,8 +792,19 @@ with st.expander("Thèmes et dictionnaires", expanded=dict_expander_open):
 # MARQUAGE (TAGGING)
 # ──────────────────────────────────────────────────────────────────────────────
 
+# Relire le dico depuis le disque pour capturer une eventuelle modification faite
+# dans le bloc dict-editor au cours de ce meme rerun (bouton "Enregistrer" qui
+# ne fait pas st.rerun() derriere). Robuste aussi au cas ou session_state aurait
+# perdu la cle "dictionaries" suite a un edge case Streamlit Cloud.
+_dictionaries_for_tagging = (
+    DICT_REPO.load()
+    or st.session_state.get("dictionaries")
+    or clone_dictionaries(DEFAULT_DICTIONARIES)
+)
+st.session_state["dictionaries"] = _dictionaries_for_tagging
+
 theme_dict = normalize_theme_dictionary(
-    st.session_state["dictionaries"].get(theme, empty_theme_dictionary())
+    _dictionaries_for_tagging.get(theme, empty_theme_dictionary())
 )
 
 # Préparation des keywords normalisés (rapide, pas de cache nécessaire)
