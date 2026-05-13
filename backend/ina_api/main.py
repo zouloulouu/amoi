@@ -26,6 +26,29 @@ from ina_api.routers import analysis, channels, export, health, metadata, themes
 logger = logging.getLogger("ina_api")
 
 
+def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
+    """Read a positive integer env var with a safe fallback."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r, using default=%d", name, raw, default)
+        return default
+    if value < minimum:
+        logger.warning("Invalid %s=%r, using minimum=%d", name, raw, minimum)
+        return minimum
+    return value
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _resolve_load_source(issues: list[str]) -> str:
     """Detect whether the corpus came from local snapshot or HF, based on issues."""
     if any("Snapshot local introuvable" in i for i in issues):
@@ -58,8 +81,14 @@ async def lifespan(app: FastAPI):
     app.state.settings = settings
     app.state.data_store = data_store
     app.state.dict_repo = dict_repo
-    # Bigger cache (was 4) since prewarming populates many themes at boot.
-    app.state.cache = TaggingCache(maxsize=16, persistence=persistence)
+    cache_maxsize = _env_int("INA_TAGGING_CACHE_MAXSIZE", 4)
+    disable_prewarm = _env_bool("INA_DISABLE_PREWARM", default=False)
+    app.state.cache = TaggingCache(maxsize=cache_maxsize, persistence=persistence)
+    logger.info(
+        "Tagging cache configured: maxsize=%d, prewarm=%s",
+        cache_maxsize,
+        "disabled" if disable_prewarm else "enabled",
+    )
 
     logger.info("Loading corpus...")
     df, issues = data_store.load(prefer="auto")
@@ -74,7 +103,7 @@ async def lifespan(app: FastAPI):
     # Background prewarming: tag every known theme so the first /analysis
     # call is a cache hit (in-memory or disk). Daemon thread → never blocks
     # shutdown.
-    if not df.empty:
+    if not disable_prewarm and not df.empty:
         dictionaries = dict_repo.load()
         if dictionaries:
             logger.info("Launching background prewarm for %d theme(s)...", len(dictionaries))

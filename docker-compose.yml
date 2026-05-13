@@ -6,7 +6,8 @@
 # Restart:          docker compose restart api
 # Pull + redeploy:  git pull && docker compose up -d --build
 #
-# Frontend is deployed separately on Vercel — this file does NOT serve it.
+# The React frontend is built on the VPS and served by nginx from /var/www/data_ina.
+# This compose file only runs the FastAPI backend.
 
 services:
   api:
@@ -25,6 +26,9 @@ services:
     environment:
       # HF_TOKEN, INA_CORS_ORIGINS, INA_HF_REPO_ID are read from .env (see env_file).
       INA_PROJECT_ROOT: /app
+      # Conservative defaults for the 8 GB VPS / Docker memory cap.
+      INA_TAGGING_CACHE_MAXSIZE: ${INA_TAGGING_CACHE_MAXSIZE:-4}
+      INA_DISABLE_PREWARM: ${INA_DISABLE_PREWARM:-0}
 
     env_file:
       - path: .env
@@ -52,7 +56,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1500M
+          memory: 3500M
         reservations:
           memory: 512M
 
