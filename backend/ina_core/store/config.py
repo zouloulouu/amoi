@@ -28,6 +28,7 @@ class Settings:
     hf_parquet_files: Tuple[str, ...]
     hf_token: Optional[str]
     project_root: Path
+    dictionary_path_override: Optional[Path] = None
 
     @property
     def clean_dir(self) -> Path:
@@ -39,6 +40,8 @@ class Settings:
 
     @property
     def dictionary_path(self) -> Path:
+        if self.dictionary_path_override is not None:
+            return self.dictionary_path_override
         return self.project_root / "dictionaries.json"
 
     @property

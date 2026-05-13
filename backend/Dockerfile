@@ -39,7 +39,7 @@ RUN uv pip install --system --no-cache \
 COPY backend/ /app/backend/
 RUN uv pip install --system --no-cache -e /app/backend
 
-# 3) Default project layout: dictionaries.json + data/ are mounted as volumes.
+# 3) Default project layout: dictionaries state + data/ are mounted as volumes.
 #    See docker-compose.yml for the canonical mounts.
 ENV INA_PROJECT_ROOT=/app
 

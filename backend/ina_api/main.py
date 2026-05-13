@@ -66,6 +66,11 @@ async def lifespan(app: FastAPI):
         hf_parquet_files=DEFAULT_HF_PARQUET_FILES,
         hf_token=os.environ.get("HF_TOKEN"),
         project_root=project_root,
+        dictionary_path_override=(
+            Path(os.environ["INA_DICTIONARY_PATH"])
+            if os.environ.get("INA_DICTIONARY_PATH")
+            else None
+        ),
     )
 
     persistence = LocalDiskPersistence(settings.cache_dir)

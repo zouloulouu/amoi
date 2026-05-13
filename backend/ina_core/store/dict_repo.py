@@ -57,6 +57,7 @@ class LocalJsonRepository:
 
     def _write_unlocked(self, dictionaries: dict) -> None:
         normalized = normalize_dictionaries_payload(dictionaries)
+        self._path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self._path.with_name(self._path.name + ".tmp")
         tmp.write_text(
             json.dumps(normalized, ensure_ascii=False, indent=2),

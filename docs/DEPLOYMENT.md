@@ -130,6 +130,7 @@ nano .env
 #   HF_TOKEN=<ton token HF>
 #   INA_CORS_ORIGINS=                  # peut rester vide : tout vient du même origin
 #   INA_HF_REPO_ID=zouloulouu/data_ina_clean
+#   INA_DICTIONARY_PATH=/app/state/dictionaries.json
 #   INA_TAGGING_CACHE_MAXSIZE=4        # prudent pour VPS 8 Go
 #   INA_DISABLE_PREWARM=0              # passer à 1 si pression mémoire au boot
 

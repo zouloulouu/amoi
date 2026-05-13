@@ -26,6 +26,7 @@ services:
     environment:
       # HF_TOKEN, INA_CORS_ORIGINS, INA_HF_REPO_ID are read from .env (see env_file).
       INA_PROJECT_ROOT: /app
+      INA_DICTIONARY_PATH: ${INA_DICTIONARY_PATH:-/app/state/dictionaries.json}
       # Conservative defaults for the 8 GB VPS / Docker memory cap.
       INA_TAGGING_CACHE_MAXSIZE: ${INA_TAGGING_CACHE_MAXSIZE:-4}
       INA_DISABLE_PREWARM: ${INA_DISABLE_PREWARM:-0}
@@ -35,8 +36,9 @@ services:
         required: false
 
     volumes:
-      # Source of truth for dictionaries — atomic writes via tmp+replace.
-      - ./dictionaries.json:/app/dictionaries.json
+      # Source of truth for dictionaries. Must be a directory mount because
+      # atomic tmp+replace writes cannot replace a bind-mounted file.
+      - ./data/state:/app/state
       # Clean snapshot used as the corpus source when HF is unavailable.
       # Read-only mount: the container should never write into data/clean.
       - ./data/clean:/app/data/clean:ro
