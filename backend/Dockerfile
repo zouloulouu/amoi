@@ -45,8 +45,10 @@ ENV INA_PROJECT_ROOT=/app
 
 EXPOSE 8000
 
-# Drop privileges.
-RUN useradd --create-home --shell /bin/bash --uid 1000 ina
+# Drop privileges. /app must stay writable because dictionaries.json is updated
+# atomically via a sibling temporary file before os.replace().
+RUN useradd --create-home --shell /bin/bash --uid 1000 ina \
+    && chown -R ina:ina /app
 USER ina
 
 # Healthcheck: FastAPI lifespan must have completed.
