@@ -159,7 +159,7 @@ export function FilterBar({
           />
           <Stack gap={5}>
             <Text component="label" size="sm" fw={500}>
-              Perimetre
+              Chaines
             </Text>
             <SegmentedControl
               fullWidth
@@ -230,7 +230,7 @@ export function FilterBar({
 
         {hasEmptyChannelSelection ? (
           <Alert color="yellow" mt="md">
-            Selectionne au moins une chaine ou repasse le perimetre sur toutes les chaines.
+            Selectionne au moins une chaine ou repasse sur toutes les chaines.
           </Alert>
         ) : null}
 
