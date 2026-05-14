@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 APP_DIR = Path(__file__).resolve().parent
-BACKEND_DIR = APP_DIR / "backend"
+REPO_ROOT = APP_DIR.parents[1]
+BACKEND_DIR = REPO_ROOT / "backend"
 if BACKEND_DIR.exists():
     import sys
 
@@ -124,7 +125,7 @@ SETTINGS = Settings(
     hf_repo_id="zouloulouu/data_ina_clean",
     hf_parquet_files=DEFAULT_HF_PARQUET_FILES,
     hf_token=get_hf_token(),
-    project_root=Path.cwd(),
+    project_root=REPO_ROOT,
 )
 
 PERSISTENCE = LocalDiskPersistence(SETTINGS.cache_dir)

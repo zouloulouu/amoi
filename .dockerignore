@@ -59,7 +59,7 @@ docs/figures/
 *.csv
 
 # Monolith Streamlit app — runs separately on Streamlit Cloud
-app.py
+legacy/streamlit/
 
 # Build/CI files for other tooling
 playwright-report/

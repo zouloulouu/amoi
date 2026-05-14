@@ -14,6 +14,7 @@ __pycache__/
 logs/
 reports/
 .streamlit/secrets.toml
+legacy/streamlit/secrets.toml
 
 # Python tooling artifacts
 .pytest_cache/
