@@ -77,7 +77,7 @@ const navItems: Array<{
   prefetch: Prefetcher;
 }> = [
   { to: "/analyse", label: "Analyse", icon: BarChart3, prefetch: prefetchAnalysis },
-  { to: "/themes", label: "Themes", icon: BookOpenText, prefetch: prefetchThemes },
+  { to: "/themes", label: "Thèmes", icon: BookOpenText, prefetch: prefetchThemes },
   { to: "/couverture", label: "Couverture", icon: Database, prefetch: prefetchCoverage },
 ];
 
@@ -87,6 +87,19 @@ export function AppLayout({ children }: AppLayoutProps) {
   const health = useHealth();
   const queryClient = useQueryClient();
   const dark = colorScheme === "dark";
+  const apiStatusLabel = health.isError
+    ? "API indisponible"
+    : health.data?.status === "degraded"
+      ? "API dégradée"
+      : "API OK";
+  const apiStatusColor = health.isError
+    ? "red"
+    : health.data?.status === "degraded"
+      ? "yellow"
+      : "teal";
+  const apiTooltip = health.isError
+    ? `Backend FastAPI non joignable (${getApiBaseUrl()})`
+    : `Source des données : ${health.data?.source ?? "api"}`;
 
   return (
     <MantineAppShell
@@ -116,19 +129,15 @@ export function AppLayout({ children }: AppLayoutProps) {
             {health.isLoading ? (
               <Loader size="xs" />
             ) : (
-              <Badge
-                color={health.data?.status === "ok" ? "teal" : "yellow"}
-                variant="light"
-              >
-                {health.data?.source ?? "api"}
-              </Badge>
+              <Tooltip label={apiTooltip}>
+                <Badge color={apiStatusColor} variant="light">
+                  {apiStatusLabel}
+                </Badge>
+              </Tooltip>
             )}
           </Group>
 
           <Group gap="xs" wrap="nowrap">
-            <Text size="xs" c="dimmed" visibleFrom="sm">
-              {getApiBaseUrl()}
-            </Text>
             <Tooltip label={dark ? "Mode clair" : "Mode sombre"}>
               <ActionIcon
                 variant="subtle"
@@ -162,8 +171,8 @@ export function AppLayout({ children }: AppLayoutProps) {
 
       <MantineAppShell.Main>
         {health.data?.status === "degraded" ? (
-          <Alert color="yellow" mb="md" title="API degradee">
-            Les donnees ne sont pas completement chargees.
+          <Alert color="yellow" mb="md" title="API dégradée">
+            Les données ne sont pas complètement chargées.
           </Alert>
         ) : null}
         {health.isError ? (

@@ -1,16 +1,15 @@
 import { Badge, Card, Group, Text, Title } from "@mantine/core";
-import { ArrowDown, ArrowUp, Hash, RadioTower, Sigma, TrendingUp } from "lucide-react";
+import { ArrowDown, ArrowUp, Hash, RadioTower, TrendingUp } from "lucide-react";
 import type { CSSProperties } from "react";
 
-import type { AnalysisResponse, CountMode } from "../../api/types";
+import type { AnalysisResponse } from "../../api/types";
 import { formatInteger, formatPercent } from "../../lib/format";
 
 type KpiCardsProps = {
   data: AnalysisResponse;
-  countMode: CountMode;
 };
 
-export function KpiCards({ data, countMode }: KpiCardsProps) {
+export function KpiCards({ data }: KpiCardsProps) {
   const kpi = data.kpi;
   const matchedShare = kpi.n_total > 0 ? kpi.n_matched / kpi.n_total : 0;
   const upShare = kpi.n_matched > 0 ? kpi.up_total / kpi.n_matched : 0;
@@ -18,7 +17,7 @@ export function KpiCards({ data, countMode }: KpiCardsProps) {
   const signalLabel = kpi.net_signal_total >= 0 ? "orientation positive" : "orientation negative";
   const cards = [
     {
-      label: "Titres analyses",
+      label: "Titres analysés",
       value: formatInteger(kpi.n_total),
       meta: "Corpus filtre",
       kind: "corpus",
@@ -26,30 +25,21 @@ export function KpiCards({ data, countMode }: KpiCardsProps) {
       accent: "#60a5fa",
     },
     {
-      label: "Titres matches",
+      label: "Titres matchés",
       value: formatInteger(kpi.n_matched),
       meta: `${formatPercent(matchedShare)} du corpus`,
       kind: "match",
       icon: Hash,
       accent: "#2dd4bf",
     },
-    countMode === "intensity"
-      ? {
-          label: "Occurrences brutes",
-          value: formatInteger(kpi.occ_concept_total),
-          meta: "Intensite totale",
-          kind: "intensite",
-          icon: Sigma,
-          accent: "#8b5cf6",
-        }
-      : {
-          label: "Frequence moyenne",
-          value: formatPercent(kpi.freq_mean),
-          meta: "Saillance moyenne",
-          kind: "moyenne",
-          icon: TrendingUp,
-          accent: "#8b5cf6",
-        },
+    {
+      label: "Fréquence moyenne",
+      value: formatPercent(kpi.freq_mean),
+      meta: "Saillance moyenne",
+      kind: "moyenne",
+      icon: TrendingUp,
+      accent: "#8b5cf6",
+    },
     {
       label: "Signal net",
       value: formatInteger(kpi.net_signal_total),

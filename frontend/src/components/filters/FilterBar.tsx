@@ -66,6 +66,10 @@ function isIsoDate(value: string | null): value is string {
   return value !== null && value !== "";
 }
 
+function formatChannelCount(count: number) {
+  return `${count} ${count > 1 ? "chaînes sélectionnées" : "chaîne sélectionnée"}`;
+}
+
 export function FilterBar({
   filters,
   themeOptions,
@@ -102,6 +106,10 @@ export function FilterBar({
   const isBeforeMin = hasDateStart && Boolean(dateMin && parsedDateStart < dateMin);
   const isAfterMax = hasDateEnd && Boolean(dateMax && parsedDateEnd > dateMax);
   const hasEmptyChannelSelection = channelScope === "selection" && filters.channels.length === 0;
+  const channelSummary =
+    channelScope === "all"
+      ? `Toutes les chaînes${channelOptions.length > 0 ? ` (${channelOptions.length})` : ""}`
+      : formatChannelCount(filters.channels.length);
   const canSubmit =
     Boolean(filters.theme) &&
     !hasInvalidDateFormat &&
@@ -141,14 +149,14 @@ export function FilterBar({
       >
         <SimpleGrid cols={{ base: 1, sm: 2, lg: 5 }} spacing="md">
           <Select
-            label="Theme"
+            label="Thème"
             data={themeOptions}
             value={filters.theme}
             onChange={(theme) => onChange({ theme: theme ?? "" })}
             searchable
           />
           <Select
-            label="Frequence"
+            label="Fréquence"
             data={[
               { value: "monthly", label: "Mensuelle" },
               { value: "quarterly", label: "Trimestrielle" },
@@ -159,13 +167,13 @@ export function FilterBar({
           />
           <Stack gap={5}>
             <Text component="label" size="sm" fw={500}>
-              Chaines
+              Chaînes
             </Text>
             <SegmentedControl
               fullWidth
               data={[
                 { value: "all", label: "Toutes" },
-                { value: "selection", label: "Selection" },
+                { value: "selection", label: "Sélection" },
               ]}
               value={channelScope}
               onChange={(scope) => {
@@ -177,9 +185,12 @@ export function FilterBar({
                 }
               }}
             />
+            <Text size="xs" c="dimmed">
+              {channelSummary}
+            </Text>
           </Stack>
           <TextInput
-            label="Debut"
+            label="Début"
             placeholder="25/12/1944"
             value={dateStartText}
             onChange={(event) => updateDateStart(event.currentTarget.value)}
@@ -201,7 +212,7 @@ export function FilterBar({
         {channelScope === "selection" ? (
           <MultiSelect
             mt="md"
-            label="Chaines selectionnees"
+            label="Chaînes sélectionnées"
             data={channelOptions}
             value={filters.channels}
             onChange={(channels) => onChange({ channels })}
@@ -212,25 +223,25 @@ export function FilterBar({
 
         {hasIncompleteDateRange ? (
           <Alert color="yellow" mt="md">
-            Selectionne une date de debut et une date de fin, ou vide completement la periode.
+            Sélectionne une date de début et une date de fin, ou vide complètement la période.
           </Alert>
         ) : null}
 
         {isBeforeMin || isAfterMax ? (
           <Alert color="yellow" mt="md">
-            La periode doit rester entre {formatFrenchDate(dateMin)} et {formatFrenchDate(dateMax)}.
+            La période doit rester entre {formatFrenchDate(dateMin)} et {formatFrenchDate(dateMax)}.
           </Alert>
         ) : null}
 
         {hasInvalidDateRange ? (
           <Alert color="red" mt="md">
-            La date de debut doit etre anterieure ou egale a la date de fin.
+            La date de début doit être antérieure ou égale à la date de fin.
           </Alert>
         ) : null}
 
         {hasEmptyChannelSelection ? (
           <Alert color="yellow" mt="md">
-            Selectionne au moins une chaine ou repasse sur toutes les chaines.
+            Sélectionne au moins une chaîne ou repasse sur toutes les chaînes.
           </Alert>
         ) : null}
 
@@ -251,7 +262,7 @@ export function FilterBar({
               }
             }
           >
-            Plage complete
+            Période complète
           </Button>
           <Button
             type="submit"

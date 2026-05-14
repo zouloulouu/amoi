@@ -16,7 +16,7 @@ import {
   YAxis,
 } from "recharts";
 
-import type { AnalysisResponse, CountMode } from "../../api/types";
+import type { AnalysisResponse } from "../../api/types";
 import { CHART_COLORS, chartAxisStyle } from "../../lib/chartTheme";
 import { formatDate, formatInteger, formatPercent } from "../../lib/format";
 
@@ -24,7 +24,6 @@ type RangeValue = "1y" | "3y" | "5y" | "all";
 
 type AnalysisChartsProps = {
   data: AnalysisResponse;
-  countMode: CountMode;
 };
 
 type TooltipPayload = {
@@ -140,7 +139,7 @@ function TimeBrush() {
   );
 }
 
-export function AnalysisCharts({ data, countMode }: AnalysisChartsProps) {
+export function AnalysisCharts({ data }: AnalysisChartsProps) {
   const [range, setRange] = useState<RangeValue>("all");
   const visibleSeries = useMemo(() => filterRange(data.series, range), [data.series, range]);
   const topChannels = useMemo(() => data.top_channels.slice(0, 10), [data.top_channels]);
@@ -155,9 +154,9 @@ export function AnalysisCharts({ data, countMode }: AnalysisChartsProps) {
     <Stack gap="md">
       <Group justify="space-between" align="center" className="chart-range-toolbar">
         <div>
-          <Text className="chart-eyebrow">Fenetre temporelle</Text>
+          <Text className="chart-eyebrow">Fenêtre temporelle</Text>
           <Text c="dimmed" size="sm">
-            Comme dans Streamlit, le controle s'applique aux graphiques temporels.
+            Comme dans Streamlit, le contrôle s'applique aux graphiques temporels.
           </Text>
         </div>
         <SegmentedControl
@@ -174,10 +173,10 @@ export function AnalysisCharts({ data, countMode }: AnalysisChartsProps) {
             <div>
               <div className="chart-eyebrow">Saillance</div>
               <Title order={3} size="h4">
-                Frequence du theme "{themeName}"
+                Fréquence du thème "{themeName}"
               </Title>
               <Text c="dimmed" size="sm">
-                Part des titres matches, agregation {frequencyLabel}.
+                Part des titres matchés, agrégation {frequencyLabel}.
               </Text>
             </div>
           </div>
@@ -215,7 +214,7 @@ export function AnalysisCharts({ data, countMode }: AnalysisChartsProps) {
                 <Line
                   type="monotone"
                   dataKey="frequency"
-                  name="Frequence"
+                  name="Fréquence"
                   stroke={CHART_COLORS.frequency}
                   strokeWidth={3}
                   dot={false}
@@ -230,19 +229,19 @@ export function AnalysisCharts({ data, countMode }: AnalysisChartsProps) {
         <Paper withBorder p="md" radius="sm" className="chart-card">
           <div className="chart-header">
             <div>
-              <div className="chart-eyebrow">Activite</div>
+              <div className="chart-eyebrow">Activité</div>
               <Title order={3} size="h4">
                 Volumes {frequencyLabel}s
               </Title>
               <Text c="dimmed" size="sm">
-                Titres matches{countMode === "intensity" ? " et occurrences brutes." : "."}
+                Titres matchés.
               </Text>
             </div>
           </div>
           <div
             className="chart-frame"
             role="img"
-            aria-label="Courbe des volumes de titres matches dans le temps"
+            aria-label="Courbe des volumes de titres matchés dans le temps"
           >
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={visibleSeries} margin={{ top: 12, right: 18, bottom: 34, left: 4 }}>
@@ -274,23 +273,12 @@ export function AnalysisCharts({ data, countMode }: AnalysisChartsProps) {
                 <Line
                   type="monotone"
                   dataKey="matched_titles"
-                  name="Titres matches"
+                  name="Titres matchés"
                   stroke={CHART_COLORS.volume}
                   strokeWidth={3}
                   dot={false}
                   activeDot={{ r: 5, strokeWidth: 0 }}
                 />
-                {countMode === "intensity" ? (
-                  <Line
-                    type="monotone"
-                    dataKey="occurrences_concept"
-                    name="Occurrences"
-                    stroke={CHART_COLORS.occurrences}
-                    strokeWidth={3}
-                    dot={false}
-                    activeDot={{ r: 5, strokeWidth: 0 }}
-                  />
-                ) : null}
                 <TimeBrush />
               </LineChart>
             </ResponsiveContainer>
@@ -305,7 +293,7 @@ export function AnalysisCharts({ data, countMode }: AnalysisChartsProps) {
                 Signal net
               </Title>
               <Text c="dimmed" size="sm">
-                Difference entre titres UP et DOWN.
+                Différence entre titres UP et DOWN.
               </Text>
             </div>
           </div>
@@ -375,7 +363,7 @@ export function AnalysisCharts({ data, countMode }: AnalysisChartsProps) {
             <div>
               <div className="chart-eyebrow">Classement</div>
               <Title order={3} size="h4">
-                Top chaines - titres matches
+                Top chaînes - titres matchés
               </Title>
               <Text c="dimmed" size="sm">
                 Couleur = signal net, comme dans Streamlit.
@@ -385,7 +373,7 @@ export function AnalysisCharts({ data, countMode }: AnalysisChartsProps) {
           <div
             className="chart-frame"
             role="img"
-            aria-label="Barres des titres matches par chaine"
+            aria-label="Barres des titres matchés par chaîne"
           >
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={topChannels} margin={{ top: 12, right: 18, bottom: 8, left: 4 }}>
@@ -406,7 +394,7 @@ export function AnalysisCharts({ data, countMode }: AnalysisChartsProps) {
                 />
                 <Bar
                   dataKey="matched_titles"
-                  name="Titres matches"
+                  name="Titres matchés"
                   radius={[4, 4, 0, 0]}
                 >
                   {topChannels.map((row) => (

@@ -28,6 +28,17 @@ function buildAnalysisPayload(filters: ReturnType<typeof useFilters>["filters"])
   };
 }
 
+function analysisRequestKey(request: AnalysisRequest) {
+  return JSON.stringify({
+    theme: request.theme,
+    frequency: request.frequency ?? "monthly",
+    count_mode: "binary",
+    date_start: request.date_start ?? null,
+    date_end: request.date_end ?? null,
+    channels: request.channels && request.channels.length > 0 ? [...request.channels].sort() : null,
+  });
+}
+
 export function AnalysisPage() {
   const { filters, setFilters } = useFilters();
   const metadata = useMetadata();
@@ -49,6 +60,7 @@ export function AnalysisPage() {
       })) ?? [],
     [channels.data]
   );
+  const currentPayload = useMemo(() => buildAnalysisPayload(filters), [filters]);
 
   useEffect(() => {
     const nextFilters: Parameters<typeof setFilters>[0] = {};
@@ -80,13 +92,17 @@ export function AnalysisPage() {
   const runAnalysis = () => {
     if (!filters.theme) return;
     setExportError(null);
-    analysis.mutate(buildAnalysisPayload(filters));
+    analysis.mutate(currentPayload);
   };
 
   const analysisKey = analysis.data ? JSON.stringify(analysis.data.request) : "empty";
+  const hasStaleResults = Boolean(
+    analysis.data && analysisRequestKey(analysis.data.request) !== analysisRequestKey(currentPayload)
+  );
+  const canExport = Boolean(analysis.data && !hasStaleResults);
 
   const exportCsv = async () => {
-    if (!analysis.data) return;
+    if (!analysis.data || hasStaleResults) return;
     setExportError(null);
     setExporting(true);
     try {
@@ -115,7 +131,7 @@ export function AnalysisPage() {
           leftSection={<Download size={16} />}
           onClick={exportCsv}
           loading={exporting}
-          disabled={!analysis.data}
+          disabled={!canExport}
           variant="light"
         >
           Export CSV
@@ -145,6 +161,13 @@ export function AnalysisPage() {
 
       {analysis.isPending ? <AnalysisSkeleton /> : null}
 
+      {hasStaleResults ? (
+        <Alert color="yellow" title="Filtres modifiés">
+          Clique sur Appliquer pour recalculer. Les résultats affichés correspondent encore à la
+          dernière analyse lancée.
+        </Alert>
+      ) : null}
+
       {exportError ? (
         <Alert color="red" title="Export impossible">
           {exportError}
@@ -152,26 +175,24 @@ export function AnalysisPage() {
       ) : null}
 
       {analysis.data && analysis.data.series.length === 0 ? (
-        <Alert color="yellow" title="Aucun resultat">
-          Aucun point de serie ne correspond aux filtres courants.
+        <Alert color="yellow" title="Aucun résultat">
+          Aucun point de série ne correspond aux filtres courants.
         </Alert>
       ) : null}
 
       {analysis.data && analysis.data.series.length > 0 ? (
         <>
-          <KpiCards data={analysis.data} countMode={analysis.data.request.count_mode ?? "binary"} />
+          <KpiCards data={analysis.data} />
           <AnalysisCharts
             key={analysisKey}
             data={analysis.data}
-            countMode={analysis.data.request.count_mode ?? "binary"}
           />
-          <AnalysisTables data={analysis.data} />
+          <AnalysisTables key={analysisKey} data={analysis.data} />
         </>
       ) : !analysis.isPending ? (
         <Paper withBorder p="md" radius="sm" className="data-panel empty-state">
           <Text c="dimmed">
-            Choisis un theme puis lance l'analyse. L'export CSV sera disponible apres le
-            premier calcul.
+            Clique sur Appliquer pour calculer l’analyse avec les filtres sélectionnés.
           </Text>
         </Paper>
       ) : null}

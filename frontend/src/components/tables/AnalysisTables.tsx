@@ -1,5 +1,5 @@
 import { Badge, Group, Pagination, Paper, Progress, Stack, Table, Text, Title } from "@mantine/core";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import type { AnalysisResponse } from "../../api/types";
 import { formatDate, formatInteger, formatPercent } from "../../lib/format";
@@ -22,6 +22,12 @@ export function AnalysisTables({ data }: AnalysisTablesProps) {
   const [previewPage, setPreviewPage] = useState(1);
   const [seriesPage, setSeriesPage] = useState(1);
   const previewTitles = useMemo(() => data.preview_titles ?? [], [data.preview_titles]);
+
+  useEffect(() => {
+    setPreviewPage(1);
+    setSeriesPage(1);
+  }, [data]);
+
   const totalPreviewPages = Math.max(1, Math.ceil(previewTitles.length / PREVIEW_PAGE_SIZE));
   const totalSeriesPages = Math.max(1, Math.ceil(data.series.length / SERIES_PAGE_SIZE));
   const previewRows = useMemo(
@@ -42,14 +48,14 @@ export function AnalysisTables({ data }: AnalysisTablesProps) {
     <Stack gap="md">
       <Paper withBorder p="md" radius="sm" className="data-panel">
         <div className="table-header">
-          <Text className="chart-eyebrow">Synthese</Text>
+          <Text className="chart-eyebrow">Synthèse</Text>
           <Title order={3} size="h4">
             Statistiques descriptives
           </Title>
         </div>
         {data.descriptive.length === 0 ? (
           <Text c="dimmed" size="sm">
-            Aucune statistique a afficher pour les filtres courants.
+            Aucune statistique à afficher pour les filtres courants.
           </Text>
         ) : (
           <Table.ScrollContainer minWidth={480}>
@@ -77,22 +83,22 @@ export function AnalysisTables({ data }: AnalysisTablesProps) {
         <div className="table-header">
           <Text className="chart-eyebrow">Classement</Text>
           <Title order={3} size="h4">
-            Top 10 chaines
+            Top 10 chaînes
           </Title>
         </div>
         {data.top_channels.length === 0 ? (
           <Text c="dimmed" size="sm">
-            Aucune chaine a classer pour les filtres courants.
+            Aucune chaîne à classer pour les filtres courants.
           </Text>
         ) : (
           <Table.ScrollContainer minWidth={840}>
             <Table striped highlightOnHover>
               <Table.Thead>
                 <Table.Tr>
-                  <Table.Th>Chaine</Table.Th>
+                  <Table.Th>Chaîne</Table.Th>
                   <Table.Th>Total</Table.Th>
                   <Table.Th>Matches</Table.Th>
-                  <Table.Th>Frequence</Table.Th>
+                  <Table.Th>Fréquence</Table.Th>
                   <Table.Th>UP</Table.Th>
                   <Table.Th>DOWN</Table.Th>
                   <Table.Th>Ambigus</Table.Th>
@@ -128,7 +134,7 @@ export function AnalysisTables({ data }: AnalysisTablesProps) {
           <div>
             <Text className="chart-eyebrow">Corpus</Text>
             <Title order={3} size="h4">
-              Apercu des titres matches
+              Aperçu des titres matchés
             </Title>
             <Text c="dimmed" size="sm">
               {formatInteger(previewTitles.length)} titres, affichage par lots de{" "}
@@ -148,7 +154,7 @@ export function AnalysisTables({ data }: AnalysisTablesProps) {
             <Table.Thead>
               <Table.Tr>
                 <Table.Th>Date</Table.Th>
-                <Table.Th>Chaine</Table.Th>
+                <Table.Th>Chaîne</Table.Th>
                 <Table.Th>Titre</Table.Th>
                 <Table.Th>Concept</Table.Th>
                 <Table.Th>UP</Table.Th>
@@ -184,7 +190,7 @@ export function AnalysisTables({ data }: AnalysisTablesProps) {
 
         {previewTitles.length === 0 ? (
           <Text c="dimmed" size="sm" mt="sm">
-            Aucun titre matche pour les filtres courants.
+            Aucun titre matché pour les filtres courants.
           </Text>
         ) : null}
       </Paper>
@@ -192,12 +198,12 @@ export function AnalysisTables({ data }: AnalysisTablesProps) {
       <Paper withBorder p="md" radius="sm" className="data-panel">
         <Group justify="space-between" mb="sm">
           <div>
-            <Text className="chart-eyebrow">Temporalite</Text>
+            <Text className="chart-eyebrow">Temporalité</Text>
             <Title order={3} size="h4">
-              Apercu serie
+              Aperçu série
             </Title>
             <Text c="dimmed" size="sm">
-              {formatInteger(data.series.length)} periodes, affichage par lots de{" "}
+              {formatInteger(data.series.length)} périodes, affichage par lots de{" "}
               {SERIES_PAGE_SIZE}.
             </Text>
           </div>
@@ -210,18 +216,18 @@ export function AnalysisTables({ data }: AnalysisTablesProps) {
         </Group>
         {data.series.length === 0 ? (
           <Text c="dimmed" size="sm">
-            Aucune periode a afficher pour les filtres courants.
+            Aucune période à afficher pour les filtres courants.
           </Text>
         ) : (
           <Table.ScrollContainer minWidth={760} className="preview-table-frame">
             <Table striped highlightOnHover>
               <Table.Thead>
                 <Table.Tr>
-                  <Table.Th>Periode</Table.Th>
+                  <Table.Th>Période</Table.Th>
                   <Table.Th>Total</Table.Th>
                   <Table.Th>Matches</Table.Th>
                   <Table.Th>Occurrences</Table.Th>
-                  <Table.Th>Frequence</Table.Th>
+                  <Table.Th>Fréquence</Table.Th>
                   <Table.Th>Signal net</Table.Th>
                 </Table.Tr>
               </Table.Thead>
