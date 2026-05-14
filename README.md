@@ -4,9 +4,10 @@ Application d'analyse thematique du corpus INA.
 
 ## Etat courant
 
-- `app.py` reste l'application Streamlit stable et deployee.
-- `backend/ina_api` expose l'API FastAPI locale.
-- `frontend/` contient l'interface React/Vite de migration Phase 5.
+- `backend/ina_api` expose l'API FastAPI.
+- `frontend/` contient l'interface React/Vite.
+- `deploy.sh` deploie l'application sur le VPS.
+- `app.py` est l'application Streamlit legacy, conservee uniquement comme fallback pendant la transition.
 
 ## Lancer en developpement
 
@@ -32,7 +33,17 @@ URLs :
 
 - Frontend : `http://127.0.0.1:5173`
 - API docs : `http://127.0.0.1:8000/docs`
-- Streamlit legacy : lancer `streamlit run app.py`
+
+## Deploiement
+
+Sur le VPS :
+
+```bash
+cd ~/data_ina
+bash deploy.sh
+```
+
+Voir [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) pour le runbook complet.
 
 ## Verifications
 
