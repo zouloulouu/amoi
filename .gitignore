@@ -1,5 +1,7 @@
 # Raw Excel exports are intentionally kept out of Git.
 data/*.xlsx
+data/**/*.xlsx
+data/**/*.csv
 data/raw/**/*.xlsx
 data/raw/**/*.parquet
 data/clean/**/*.json
@@ -31,6 +33,12 @@ frontend/vite.config.d.ts
 # R session files
 .RData
 .Rhistory
+
+# Local analysis outputs and derived datasets
+/*.csv
+data/gold/
+data/inflation/
+*.joblib
 
 # Local Claude Code settings
 .claude/
