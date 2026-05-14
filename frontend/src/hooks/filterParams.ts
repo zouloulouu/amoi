@@ -47,9 +47,6 @@ export function serializeAnalysisFilters(filters: AnalysisFilters): URLSearchPar
   if (filters.frequency !== DEFAULT_FILTERS.frequency) {
     params.set("frequency", filters.frequency);
   }
-  if (filters.countMode !== DEFAULT_FILTERS.countMode) {
-    params.set("count_mode", filters.countMode);
-  }
   if (filters.dateStart) params.set("date_start", filters.dateStart);
   if (filters.dateEnd) params.set("date_end", filters.dateEnd);
   filters.channels.forEach((channel) => params.append("channels", channel));

@@ -21,7 +21,7 @@ function buildAnalysisPayload(filters: ReturnType<typeof useFilters>["filters"])
   return {
     theme: filters.theme,
     frequency: filters.frequency,
-    count_mode: filters.countMode,
+    count_mode: "binary",
     date_start: filters.dateStart || null,
     date_end: filters.dateEnd || null,
     channels: filters.channels.length > 0 ? filters.channels : null,

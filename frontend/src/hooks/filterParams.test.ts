@@ -44,4 +44,17 @@ describe("analysis filter URL helpers", () => {
     expect(params.get("date_end")).toBe("2024-03-31");
     expect(params.getAll("channels")).toEqual(["TF1", "RTL"]);
   });
+
+  it("does not serialize count_mode anymore", () => {
+    const params = serializeAnalysisFilters({
+      theme: "chomage",
+      frequency: "monthly",
+      countMode: "intensity",
+      dateStart: "",
+      dateEnd: "",
+      channels: [],
+    });
+
+    expect(params.get("count_mode")).toBeNull();
+  });
 });

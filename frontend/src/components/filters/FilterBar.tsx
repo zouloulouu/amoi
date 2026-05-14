@@ -5,14 +5,17 @@ import {
   MultiSelect,
   Paper,
   Select,
+  SegmentedControl,
   SimpleGrid,
+  Stack,
+  Text,
   TextInput,
 } from "@mantine/core";
 import dayjs from "dayjs";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { RotateCcw, Search } from "lucide-react";
 
-import type { CountMode, Frequency } from "../../api/types";
+import type { Frequency } from "../../api/types";
 import type { AnalysisFilters } from "../../hooks/useFilters";
 
 type SelectOption = {
@@ -75,8 +78,17 @@ export function FilterBar({
 }: FilterBarProps) {
   const [dateStartDraft, setDateStartDraft] = useState<string | null>(null);
   const [dateEndDraft, setDateEndDraft] = useState<string | null>(null);
+  const [channelScope, setChannelScope] = useState<"all" | "selection">(
+    filters.channels.length > 0 ? "selection" : "all"
+  );
   const dateStartText = dateStartDraft ?? formatFrenchDate(filters.dateStart);
   const dateEndText = dateEndDraft ?? formatFrenchDate(filters.dateEnd);
+
+  useEffect(() => {
+    if (filters.channels.length > 0) {
+      setChannelScope("selection");
+    }
+  }, [filters.channels.length]);
 
   const parsedDateStart = parseFrenchDate(dateStartText);
   const parsedDateEnd = parseFrenchDate(dateEndText);
@@ -89,13 +101,15 @@ export function FilterBar({
     hasDateStart && hasDateEnd && parsedDateStart > parsedDateEnd;
   const isBeforeMin = hasDateStart && Boolean(dateMin && parsedDateStart < dateMin);
   const isAfterMax = hasDateEnd && Boolean(dateMax && parsedDateEnd > dateMax);
+  const hasEmptyChannelSelection = channelScope === "selection" && filters.channels.length === 0;
   const canSubmit =
     Boolean(filters.theme) &&
     !hasInvalidDateFormat &&
     !hasIncompleteDateRange &&
     !hasInvalidDateRange &&
     !isBeforeMin &&
-    !isAfterMax;
+    !isAfterMax &&
+    !hasEmptyChannelSelection;
 
   const updateDateStart = (value: string) => {
     const formatted = formatDateInput(value);
@@ -125,7 +139,7 @@ export function FilterBar({
           }
         }}
       >
-        <SimpleGrid cols={{ base: 1, sm: 2, lg: 6 }} spacing="md">
+        <SimpleGrid cols={{ base: 1, sm: 2, lg: 5 }} spacing="md">
           <Select
             label="Theme"
             data={themeOptions}
@@ -143,15 +157,27 @@ export function FilterBar({
             value={filters.frequency}
             onChange={(frequency) => onChange({ frequency: (frequency ?? "monthly") as Frequency })}
           />
-          <Select
-            label="Mode"
-            data={[
-              { value: "binary", label: "Binaire" },
-              { value: "intensity", label: "Intensite" },
-            ]}
-            value={filters.countMode}
-            onChange={(countMode) => onChange({ countMode: (countMode ?? "binary") as CountMode })}
-          />
+          <Stack gap={5}>
+            <Text component="label" size="sm" fw={500}>
+              Perimetre
+            </Text>
+            <SegmentedControl
+              fullWidth
+              data={[
+                { value: "all", label: "Toutes" },
+                { value: "selection", label: "Selection" },
+              ]}
+              value={channelScope}
+              onChange={(scope) => {
+                if (scope === "all") {
+                  setChannelScope("all");
+                  onChange({ channels: [] });
+                } else {
+                  setChannelScope("selection");
+                }
+              }}
+            />
+          </Stack>
           <TextInput
             label="Debut"
             placeholder="25/12/1944"
@@ -170,15 +196,19 @@ export function FilterBar({
             inputMode="numeric"
             maxLength={10}
           />
+        </SimpleGrid>
+
+        {channelScope === "selection" ? (
           <MultiSelect
-            label="Chaines"
+            mt="md"
+            label="Chaines selectionnees"
             data={channelOptions}
             value={filters.channels}
             onChange={(channels) => onChange({ channels })}
             searchable
             clearable
           />
-        </SimpleGrid>
+        ) : null}
 
         {hasIncompleteDateRange ? (
           <Alert color="yellow" mt="md">
@@ -198,6 +228,12 @@ export function FilterBar({
           </Alert>
         ) : null}
 
+        {hasEmptyChannelSelection ? (
+          <Alert color="yellow" mt="md">
+            Selectionne au moins une chaine ou repasse le perimetre sur toutes les chaines.
+          </Alert>
+        ) : null}
+
         <Group justify="space-between" mt="md">
           <Button
             variant="subtle"
@@ -206,6 +242,7 @@ export function FilterBar({
               {
                 setDateStartDraft(null);
                 setDateEndDraft(null);
+                setChannelScope("all");
                 onChange({
                   dateStart: dateMin ?? "",
                   dateEnd: dateMax ?? "",
