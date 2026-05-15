@@ -303,8 +303,10 @@ body {
   border-radius: var(--mantine-radius-sm);
   color: var(--mantine-color-text);
   cursor: pointer;
+  flex: 1;
   font: inherit;
   min-height: 58px;
+  min-width: 0;
   padding: var(--mantine-spacing-xs);
   text-align: left;
   width: 100%;
@@ -317,6 +319,11 @@ body {
 .theme-list-item[data-active="true"] {
   background: light-dark(#dff7f4, rgba(45, 212, 191, 0.14));
   border-color: light-dark(#79ddd2, rgba(45, 212, 191, 0.42));
+}
+
+.theme-list-delete {
+  align-self: center;
+  flex: 0 0 auto;
 }
 
 .danger-zone {

@@ -1,4 +1,4 @@
-import { Alert, Loader, SimpleGrid, Stack, Text, Title } from "@mantine/core";
+import { Alert, Button, Group, Loader, Modal, SimpleGrid, Stack, Text, Title } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useMemo, useState } from "react";
 
@@ -8,7 +8,7 @@ import { useRenameTheme } from "../api/mutations/useRenameTheme";
 import { useUpdateTheme } from "../api/mutations/useUpdateTheme";
 import { useTheme } from "../api/queries/useTheme";
 import { useThemes } from "../api/queries/useThemes";
-import type { ThemeDictionary } from "../api/types";
+import type { ThemeDictionary, ThemeSummary } from "../api/types";
 import { DangerZone } from "../components/themes/DangerZone";
 import { ThemeForm } from "../components/themes/ThemeForm";
 import { ThemeListSidebar } from "../components/themes/ThemeListSidebar";
@@ -16,6 +16,7 @@ import { ThemeListSidebar } from "../components/themes/ThemeListSidebar";
 export function ThemesPage() {
   const themes = useThemes();
   const [selectedName, setSelectedName] = useState<string | null>(null);
+  const [themeToDelete, setThemeToDelete] = useState<ThemeSummary | null>(null);
   const [mode, setMode] = useState<"create" | "edit">("edit");
 
   const sortedThemes = useMemo(() => themes.data ?? [], [themes.data]);
@@ -41,8 +42,62 @@ export function ThemesPage() {
     });
   };
 
+  const handleDeleteTheme = (themeName: string) => {
+    deleteTheme.mutate(themeName, {
+      onSuccess: () => {
+        const nextTheme = sortedThemes.find((theme) => theme.name !== themeName);
+        setSelectedName(nextTheme?.name ?? null);
+        setMode("edit");
+        setThemeToDelete(null);
+        notifications.show({
+          color: "teal",
+          title: "Thème supprimé",
+          message: themeName,
+        });
+      },
+      onError: (error) => showError(error.message),
+    });
+  };
+
   return (
     <Stack gap="md">
+      <Modal
+        centered
+        opened={themeToDelete !== null}
+        onClose={() => {
+          if (!deleteTheme.isPending) setThemeToDelete(null);
+        }}
+        title="Supprimer ce thème"
+      >
+        <Stack gap="md">
+          <Text size="sm">
+            Cette action supprimera le dictionnaire{" "}
+            <Text component="span" fw={700}>
+              {themeToDelete?.name}
+            </Text>
+            . Les résultats déjà calculés ne seront pas modifiés.
+          </Text>
+          <Group justify="flex-end">
+            <Button
+              disabled={deleteTheme.isPending}
+              onClick={() => setThemeToDelete(null)}
+              variant="default"
+            >
+              Annuler
+            </Button>
+            <Button
+              color="red"
+              loading={deleteTheme.isPending}
+              onClick={() => {
+                if (themeToDelete) handleDeleteTheme(themeToDelete.name);
+              }}
+            >
+              Supprimer
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
+
       <div>
         <Title order={2}>Themes</Title>
         <Text c="dimmed" size="sm">
@@ -66,6 +121,8 @@ export function ThemesPage() {
         <ThemeListSidebar
           themes={sortedThemes}
           selectedName={effectiveSelectedName}
+          canDelete={sortedThemes.length > 1}
+          deletingName={deleteTheme.isPending ? themeToDelete?.name : null}
           onSelect={(name) => {
             setSelectedName(name);
             setMode("edit");
@@ -74,6 +131,7 @@ export function ThemesPage() {
             setSelectedName(null);
             setMode("create");
           }}
+          onRequestDelete={setThemeToDelete}
         />
 
         <Stack gap="md">
@@ -161,19 +219,11 @@ export function ThemesPage() {
                 );
               }}
               onDelete={() => {
-                deleteTheme.mutate(selectedTheme.data.name, {
-                  onSuccess: () => {
-                    const nextTheme = sortedThemes.find(
-                      (theme) => theme.name !== selectedTheme.data.name
-                    );
-                    setSelectedName(nextTheme?.name ?? null);
-                    notifications.show({
-                      color: "teal",
-                      title: "Theme supprime",
-                      message: selectedTheme.data.name,
-                    });
-                  },
-                  onError: (error) => showError(error.message),
+                setThemeToDelete({
+                  name: selectedTheme.data.name,
+                  n_concept: selectedTheme.data.concept?.length ?? 0,
+                  n_up: selectedTheme.data.up?.length ?? 0,
+                  n_down: selectedTheme.data.down?.length ?? 0,
                 });
               }}
             />
