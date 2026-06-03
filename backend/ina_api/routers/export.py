@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import io
+import re
 from datetime import date
 from typing import Optional
 
@@ -21,6 +22,26 @@ from ina_api.deps import get_cache, get_df_base, get_dict_repo
 from ina_api.schemas import FREQUENCY_LABEL, Frequency
 
 router = APIRouter(tags=["export"])
+
+
+def _slugify_channel(name: str) -> str:
+    """Strip a channel name down to filename-safe characters (e.g. 'BFM TV' -> 'BFMTV')."""
+    return re.sub(r"[^A-Za-z0-9]+", "", name) or "chaine"
+
+
+def _channels_label(channels: Optional[list[str]]) -> str:
+    """Build a clear filename fragment from the selected channels.
+
+    - no selection (all channels) -> 'all'
+    - 1 to 3 channels             -> their names joined ('RTL', 'RTL-BFMTV', ...)
+    - more than 3                 -> a count ('5chaines') to keep the name short
+    """
+    if not channels:
+        return "all"
+    unique = list(dict.fromkeys(channels))
+    if len(unique) <= 3:
+        return "-".join(_slugify_channel(channel) for channel in unique)
+    return f"{len(unique)}chaines"
 
 
 def _format_period_date(ts: pd.Timestamp, frequency: Frequency) -> str:
@@ -115,7 +136,7 @@ def export_csv(
             yield buf.getvalue()
             buf.seek(0); buf.truncate()
 
-    fname_parts = [theme, frequency.value]
+    fname_parts = [theme, frequency.value, _channels_label(channels)]
     if date_start is not None:
         fname_parts.append(date_start.strftime("%Y%m%d"))
     if date_end is not None:
