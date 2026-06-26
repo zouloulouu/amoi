@@ -126,9 +126,10 @@ function ChartTooltip({
   );
 }
 
-function TimeBrush() {
+function TimeBrush({ rangeKey }: { rangeKey: string }) {
   return (
     <Brush
+      key={rangeKey}
       dataKey="period_start"
       height={24}
       travellerWidth={8}
@@ -220,7 +221,7 @@ export function AnalysisCharts({ data }: AnalysisChartsProps) {
                   dot={false}
                   activeDot={{ r: 5, strokeWidth: 0 }}
                 />
-                <TimeBrush />
+                <TimeBrush rangeKey={range} />
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -279,7 +280,7 @@ export function AnalysisCharts({ data }: AnalysisChartsProps) {
                   dot={false}
                   activeDot={{ r: 5, strokeWidth: 0 }}
                 />
-                <TimeBrush />
+                <TimeBrush rangeKey={range} />
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -352,7 +353,7 @@ export function AnalysisCharts({ data }: AnalysisChartsProps) {
                     />
                   ))}
                 </Bar>
-                <TimeBrush />
+                <TimeBrush rangeKey={range} />
               </BarChart>
             </ResponsiveContainer>
           </div>

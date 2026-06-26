@@ -159,29 +159,22 @@ export function AnalysisPage() {
         </Alert>
       ) : null}
 
-      {analysis.isPending ? <AnalysisSkeleton /> : null}
-
-      {hasStaleResults ? (
-        <Alert color="yellow" title="Filtres modifiés">
-          Clique sur Appliquer pour recalculer. Les résultats affichés correspondent encore à la
-          dernière analyse lancée.
-        </Alert>
-      ) : null}
-
       {exportError ? (
         <Alert color="red" title="Export impossible">
           {exportError}
         </Alert>
       ) : null}
 
-      {analysis.data && analysis.data.series.length === 0 ? (
-        <Alert color="yellow" title="Aucun résultat">
-          Aucun point de série ne correspond aux filtres courants.
-        </Alert>
-      ) : null}
-
-      {analysis.data && analysis.data.series.length > 0 ? (
+      {analysis.isPending ? (
+        <AnalysisSkeleton />
+      ) : analysis.data && analysis.data.series.length > 0 ? (
         <>
+          {hasStaleResults ? (
+            <Alert color="yellow" title="Filtres modifiés">
+              Clique sur Appliquer pour recalculer. Les résultats affichés correspondent encore à la
+              dernière analyse lancée.
+            </Alert>
+          ) : null}
           <KpiCards data={analysis.data} />
           <AnalysisCharts
             key={analysisKey}
@@ -189,13 +182,17 @@ export function AnalysisPage() {
           />
           <AnalysisTables key={analysisKey} data={analysis.data} />
         </>
-      ) : !analysis.isPending ? (
+      ) : analysis.data && analysis.data.series.length === 0 ? (
+        <Alert color="yellow" title="Aucun résultat">
+          Aucun point de série ne correspond aux filtres courants.
+        </Alert>
+      ) : (
         <Paper withBorder p="md" radius="sm" className="data-panel empty-state">
           <Text c="dimmed">
             Clique sur Appliquer pour calculer l’analyse avec les filtres sélectionnés.
           </Text>
         </Paper>
-      ) : null}
+      )}
     </Stack>
   );
 }
